@@ -113,6 +113,10 @@ for station in tqdm(models.keys(), desc="Predicting for each station"):
         'predicted': predictions
     })
 
+    # Include all input features in the comparison DataFrame
+    for feature in original_features:
+        comparison[feature] = station_data[feature].values
+
     results.append(comparison)
 
 comparison_results = pd.concat(results, ignore_index=True)
