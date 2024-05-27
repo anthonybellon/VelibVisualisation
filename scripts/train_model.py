@@ -9,6 +9,7 @@ from tqdm import tqdm
 from geopy.distance import geodesic
 import numpy as np
 from scipy.spatial import KDTree
+
 # Mapping historical station names to live data names if necessary
 station_name_mapping = {
     'Benjamin Godard - Victor Hugo': 'Benjamin Godard - Victor Hugo',
@@ -93,7 +94,7 @@ print(merged_data.head(10))
 merged_data['hour'] = merged_data['date'].dt.hour
 merged_data['day_of_week'] = merged_data['date'].dt.dayofweek
 
-def calculate_nearby_station_status(data, radius=500, limit=10):
+def calculate_nearby_station_status(data, radius=500, limit=100):
     data = data.copy()
     stations = data['station_name'].unique()[:limit]  # Limit to the first 'limit' stations
 
@@ -143,7 +144,7 @@ def calculate_nearby_station_status(data, radius=500, limit=10):
     return data
 
 # Apply the function to the merged data
-merged_data = calculate_nearby_station_status(merged_data, limit=5)
+merged_data = calculate_nearby_station_status(merged_data, limit=100)
 
 # Select features and target
 features = ['hour', 'day_of_week', 'tempmax', 'tempmin', 'temp', 'humidity', 'precip', 'windspeed', 
@@ -157,7 +158,7 @@ merged_data[features] = scaler.fit_transform(merged_data[features])
 
 # Train a model for each station
 models = {}
-stations = merged_data['station_name'].unique()[:5]  # Limit to the first 5 stations
+stations = merged_data['station_name'].unique()[:100]  # Limit to the first 100 stations
 
 print(f"Found {len(stations)} unique stations. Training models...")
 
@@ -197,6 +198,12 @@ for i, station in enumerate(tqdm(stations, desc="Training models", unit="station
     print(f"Model score: {best_model.score(X_test, y_test)}")
 
 # Save models
+# After training all models and before saving them
+scaler_file_path = os.path.join(os.path.dirname(__file__), '../data/scaler.pkl')
+with open(scaler_file_path, 'wb') as f:
+    pickle.dump(scaler, f)
+    print(f"Scaler saved to {scaler_file_path}")
+
 model_file_path = os.path.join(os.path.dirname(__file__), '../data/model_test.pkl')
 with open(model_file_path, 'wb') as f:
     pickle.dump(models, f)

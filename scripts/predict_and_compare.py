@@ -4,6 +4,8 @@ import pickle
 import os
 from tqdm import tqdm
 from scipy.spatial import KDTree
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import json
 
 # Load trained models
 model_file_path = os.path.join(os.path.dirname(__file__), '../data/model_test.pkl')
@@ -105,6 +107,8 @@ for station in tqdm(models.keys(), desc="Predicting for each station"):
     comparison = pd.DataFrame({
         'station_name': station,
         'date': station_data['date'],
+        'lat': station_data['lat'],
+        'lon': station_data['lon'],
         'actual': actuals,
         'predicted': predictions
     })
@@ -114,7 +118,23 @@ for station in tqdm(models.keys(), desc="Predicting for each station"):
 comparison_results = pd.concat(results, ignore_index=True)
 
 # Save the results as a JSON file
-output_file_path = os.path.join(os.path.dirname(__file__), '../data/predictions.json')
+output_file_path = os.path.join(os.path.dirname(__file__), '../data/predictions_comparison.json')
 comparison_results.to_json(output_file_path, orient='records', date_format='iso')
 
 print("Prediction and comparison completed. Results saved to predictions_comparison.json")
+
+# Calculate metrics
+mae = mean_absolute_error(comparison_results['actual'], comparison_results['predicted'])
+rmse = mean_squared_error(comparison_results['actual'], comparison_results['predicted'], squared=False)
+
+metrics = {
+    'MAE': mae,
+    'RMSE': rmse
+}
+
+# Save metrics to a JSON file
+metrics_file_path = os.path.join(os.path.dirname(__file__), '../data/prediction_metrics.json')
+with open(metrics_file_path, 'w') as f:
+    json.dump(metrics, f)
+
+print("Metrics calculated and saved to prediction_metrics.json")
