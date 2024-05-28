@@ -29,14 +29,9 @@ if current_bike_data['date'].dt.tz is None:
     current_bike_data['date'] = current_bike_data['date'].dt.tz_localize('UTC')
 
 # Extract latitude and longitude
-latitudes = []
-longitudes = []
-for coord in tqdm(current_bike_data['coordonnees_geo'], desc="Extracting coordinates"):
-    latitudes.append(coord['lat'])
-    longitudes.append(coord['lon'])
-
-current_bike_data['lat'] = latitudes
-current_bike_data['lon'] = longitudes
+coords = pd.json_normalize(current_bike_data['coordonnees_geo'])
+current_bike_data['lat'] = coords['lat']
+current_bike_data['lon'] = coords['lon']
 
 # Remove any NaN values
 current_bike_data.fillna(0, inplace=True)
@@ -134,7 +129,7 @@ print("Making predictions and comparing with actual values...")
 results = []
 
 for station in tqdm(models.keys(), desc="Predicting for each station"):
-    station_data = current_bike_data[current_bike_data['stationcode'] == station]
+    station_data = current_bike_data[current_bike_data['stationcode'] == station].copy()  # Ensure it's a copy
     if station_data.empty:
         continue
     X = station_data[features]
@@ -147,7 +142,6 @@ for station in tqdm(models.keys(), desc="Predicting for each station"):
 
 # Concatenate results
 results_df = pd.concat(results)
-
 # Convert 'date' column to string for JSON serialization
 results_df['date'] = results_df['date'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -167,3 +161,19 @@ with open(results_json_path, 'w') as f:
     json.dump(results_json, f, indent=4)
 
 print(f"Predictions and comparisons saved to {results_json_path}")
+
+# Organize predictions by day and hour
+print("Organizing predictions by day and hour...")
+organized_predictions = {}
+for day in range(7):
+    organized_predictions[day] = {}
+    for hour in range(24):
+        filtered_data = results_df[(results_df['day_of_week_unscaled'] == day) & (results_df['hour_unscaled'] == hour)]
+        organized_predictions[day][hour] = filtered_data['predicted_bikesavailable'].tolist()
+
+# Save organized predictions to a JSON file
+organized_predictions_path = get_absolute_path('../data/organized_predictions.json')
+with open(organized_predictions_path, 'w') as f:
+    json.dump(organized_predictions, f, indent=4)
+
+print(f"Organized predictions saved to {organized_predictions_path}")
