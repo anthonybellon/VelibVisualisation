@@ -162,14 +162,16 @@ with open(results_json_path, 'w') as f:
 
 print(f"Predictions and comparisons saved to {results_json_path}")
 
-# Organize predictions by day and hour
-print("Organizing predictions by day and hour...")
+# Organize predictions by station, day, and hour
+print("Organizing predictions by station, day, and hour...")
 organized_predictions = {}
-for day in range(7):
-    organized_predictions[day] = {}
-    for hour in range(24):
-        filtered_data = results_df[(results_df['day_of_week_unscaled'] == day) & (results_df['hour_unscaled'] == hour)]
-        organized_predictions[day][hour] = filtered_data['predicted_bikesavailable'].tolist()
+for station in results_df['stationcode'].unique():
+    organized_predictions[station] = {day: {hour: [] for hour in range(24)} for day in range(7)}
+    station_data = results_df[results_df['stationcode'] == station]
+    for index, row in station_data.iterrows():
+        day = row['day_of_week_unscaled']
+        hour = row['hour_unscaled']
+        organized_predictions[station][day][hour].append(row['predicted_bikesavailable'])
 
 # Save organized predictions to a JSON file
 organized_predictions_path = get_absolute_path('../data/organized_predictions.json')

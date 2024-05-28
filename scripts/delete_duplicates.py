@@ -8,9 +8,9 @@ def get_absolute_path(relative_path):
     return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
 # Define the directories and paths
-input_directory = get_absolute_path('../monthly_data')
-output_clean_directory = get_absolute_path('../monthly_data_clean')
-output_duplicates_directory = get_absolute_path('../monthly_data_duplicates')
+input_directory = get_absolute_path('../data/data_to_clean')
+output_clean_directory = get_absolute_path('../data/data_cleaned')
+output_duplicates_directory = get_absolute_path('../data/data_cleaned_duplicates')
 
 # Ensure the output directories exist
 os.makedirs(output_clean_directory, exist_ok=True)

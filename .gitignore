@@ -161,4 +161,3 @@ cython_debug/
 
 # data files
 data/
-monthly_data_clean/

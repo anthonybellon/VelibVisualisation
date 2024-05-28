@@ -5,14 +5,14 @@ import os
 from datetime import datetime
 
 API_URL = "https://opendata.paris.fr/api/explore/v2.1/catalog/datasets/velib-disponibilite-en-temps-reel/records"
-OUTPUT_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data_to_clean/velib_data.json'))
-DAILY_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/daily'))
+OUTPUT_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/doNotTouch/weekly_velib_data/weekly_velib_data.json'))
+DAILY_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/doNotTouch/daily_velib_data/daily'))
 
 def fetch_data():
     all_stations_data = []
     start = 0
     limit = 100
-    total_stations = 1471 
+    total_stations = 1468
 
     while start < total_stations:
         response = requests.get(API_URL, params={"start": start, "limit": limit})

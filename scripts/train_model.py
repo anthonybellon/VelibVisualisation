@@ -16,7 +16,7 @@ def get_absolute_path(relative_path):
     return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
 # Directory containing the cleaned JSON files
-clean_data_directory = get_absolute_path('../historical_data_clean')
+clean_data_directory = get_absolute_path('../data/historical_data_clean')
 
 # Load and concatenate JSON files
 print("Loading cleaned bike data...")
