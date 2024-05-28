@@ -22,7 +22,7 @@ def fetch_data():
         
         try:
             data = response.json()
-            records = data['results']
+            records = data.get('results', [])
             if not records:
                 break
             all_stations_data.extend(records)

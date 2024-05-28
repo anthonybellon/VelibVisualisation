@@ -1,56 +1,60 @@
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-import pickle
+import numpy as np
 import os
+import pickle
 from tqdm import tqdm
-from scipy.spatial import KDTree
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 import json
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial import KDTree
 
-# Load trained models
-model_file_path = os.path.join(os.path.dirname(__file__), '../data/model_test.pkl')
-with open(model_file_path, 'rb') as f:
-    models = pickle.load(f)
+# Function to get the absolute path relative to the script location
+def get_absolute_path(relative_path):
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
-# Load up-to-date bike data
-print("Loading up-to-date bike data...")
-velib_data = pd.read_json(os.path.join(os.path.dirname(__file__), '../data/velib_data.json'))
+# Load the current data
+print("Loading current bike data...")
+current_data_path = get_absolute_path('../data/velib_data.json')
+with open(current_data_path, 'r') as f:
+    current_data = json.load(f)
 
-# Preprocess up-to-date bike data
-print("Preprocessing up-to-date bike data...")
-velib_data['date'] = pd.to_datetime(velib_data['duedate'])
-if velib_data['date'].dt.tz is None:
-    velib_data['date'] = velib_data['date'].dt.tz_localize('UTC')
-else:
-    velib_data['date'] = velib_data['date'].dt.tz_convert('UTC')
+# Convert to DataFrame
+current_bike_data = pd.DataFrame(current_data)
 
-velib_data['lat'] = velib_data['coordonnees_geo'].apply(lambda x: x['lat'])
-velib_data['lon'] = velib_data['coordonnees_geo'].apply(lambda x: x['lon'])
-velib_data['operative'] = velib_data['is_installed'] == "OUI"
-velib_data['hour'] = velib_data['date'].dt.hour
-velib_data['day_of_week'] = velib_data['date'].dt.dayofweek
+# Preprocess current data
+print("Preprocessing current bike data...")
+current_bike_data['date'] = pd.to_datetime(current_bike_data['duedate'])
 
-# Select features
-original_features = ['hour', 'day_of_week', 'tempmax', 'tempmin', 'temp', 'humidity', 'precip', 'windspeed', 
-                     'nearby_stations_closed', 'nearby_stations_full', 'nearby_stations_empty', 
-                     'likelihood_fill', 'likelihood_empty']
+# Ensure 'date' column is timezone-aware (localize to UTC if needed)
+if current_bike_data['date'].dt.tz is None:
+    current_bike_data['date'] = current_bike_data['date'].dt.tz_localize('UTC')
 
-# Create missing features with zero values
-for feature in original_features:
-    if feature not in velib_data.columns:
-        velib_data[feature] = 0
+# Extract latitude and longitude
+latitudes = []
+longitudes = []
+for coord in tqdm(current_bike_data['coordonnees_geo'], desc="Extracting coordinates"):
+    latitudes.append(coord['lat'])
+    longitudes.append(coord['lon'])
 
-# Select features for normalization
-features = ['hour', 'day_of_week', 
-            'nearby_stations_closed', 'nearby_stations_full', 'nearby_stations_empty', 
-            'likelihood_fill', 'likelihood_empty']
+current_bike_data['lat'] = latitudes
+current_bike_data['lon'] = longitudes
 
-# Normalize features
-scaler = StandardScaler()
+# Remove any NaN values
+current_bike_data.fillna(0, inplace=True)
 
-def calculate_nearby_station_status(data, radius=500):
+# Feature engineering: Add hour and day_of_week
+current_bike_data['hour'] = current_bike_data['date'].dt.hour
+current_bike_data['day_of_week'] = current_bike_data['date'].dt.dayofweek
+
+# Adding human-readable hour and day_of_week columns
+current_bike_data['hour_unscaled'] = current_bike_data['date'].dt.hour
+current_bike_data['day_of_week_unscaled'] = current_bike_data['date'].dt.dayofweek
+
+# Function to calculate nearby station status
+def calculate_nearby_station_status(data, radius=500, limit=5):  # Limit to the first 5 stations
     data = data.copy()
-    coords = data[['lat', 'lon']].values
+    stations = data['stationcode'].unique()[:limit]  # Limit to the first 'limit' stations
+
+    coords = data[['lat', 'lon']].drop_duplicates().values
     kd_tree = KDTree(coords)
 
     data['nearby_stations_closed'] = 0
@@ -58,87 +62,108 @@ def calculate_nearby_station_status(data, radius=500):
     data['nearby_stations_empty'] = 0
     data['likelihood_fill'] = 0.0
     data['likelihood_empty'] = 0.0
-    
-    for i, row in tqdm(data.iterrows(), total=len(data), desc="Calculating nearby station status"):
-        station_coords = (row['lat'], row['lon'])
+
+    for station in tqdm(stations, desc="Calculating nearby station status"):
+        station_data = data[data['stationcode'] == station]
+        station_coords = station_data[['lat', 'lon']].iloc[0].values
+
         indices = kd_tree.query_ball_point(station_coords, radius / 1000.0)
         nearby_stations = data.iloc[indices]
-        
-        nearby_stations_closed = nearby_stations['operative'].apply(lambda x: 1 if not x else 0).sum()
-        nearby_stations_full = (nearby_stations['numbikesavailable'] == nearby_stations['capacity']).sum()
-        nearby_stations_empty = (nearby_stations['numbikesavailable'] == 0).sum()
 
-        data.at[i, 'nearby_stations_closed'] = nearby_stations_closed
-        data.at[i, 'nearby_stations_full'] = nearby_stations_full
-        data.at[i, 'nearby_stations_empty'] = nearby_stations_empty
+        for index, row in station_data.iterrows():
+            date_filtered_nearby_stations = nearby_stations[nearby_stations['date'] == row['date']]
+            nearby_stations_closed = date_filtered_nearby_stations['is_installed'].apply(lambda x: 1 if x == "NON" else 0).sum()
+            nearby_stations_full = (date_filtered_nearby_stations['numbikesavailable'] == date_filtered_nearby_stations['capacity']).sum()
+            nearby_stations_empty = (date_filtered_nearby_stations['numbikesavailable'] == 0).sum()
 
-        total_nearby_stations = len(nearby_stations)
-        if total_nearby_stations > 0:
-            likelihood_fill = nearby_stations_full / total_nearby_stations
-            likelihood_empty = nearby_stations_empty / total_nearby_stations
-        else:
-            likelihood_fill = 0.0
-            likelihood_empty = 0.0
+            data.loc[index, 'nearby_stations_closed'] = nearby_stations_closed
+            data.loc[index, 'nearby_stations_full'] = nearby_stations_full
+            data.loc[index, 'nearby_stations_empty'] = nearby_stations_empty
 
-        data.at[i, 'likelihood_fill'] = likelihood_fill
-        data.at[i, 'likelihood_empty'] = likelihood_empty
+            total_nearby_stations = len(date_filtered_nearby_stations)
+            if total_nearby_stations > 0:
+                likelihood_fill = nearby_stations_full / total_nearby_stations
+                likelihood_empty = nearby_stations_empty / total_nearby_stations
+            else:
+                likelihood_fill = 0.0
+                likelihood_empty = 0.0
+
+            data.loc[index, 'likelihood_fill'] = likelihood_fill
+            data.loc[index, 'likelihood_empty'] = likelihood_empty
+
+            # Adjust likelihood based on nearby station statuses
+            if nearby_stations_full > total_nearby_stations / 2:
+                data.loc[index, 'likelihood_fill'] *= 1.5  # Increase likelihood of filling up
+            if nearby_stations_empty > total_nearby_stations / 2:
+                data.loc[index, 'likelihood_empty'] *= 1.5  # Increase likelihood of emptying
 
     return data
 
-# Apply the function to the up-to-date data
-velib_data = calculate_nearby_station_status(velib_data)
+# Apply the function to the current bike data
+print("Calculating nearby station status...")
+current_bike_data = calculate_nearby_station_status(current_bike_data, limit=5)
 
-# Normalize the merged data
-velib_data[original_features] = scaler.fit_transform(velib_data[original_features])
+# Load the scaler and models
+print("Loading scaler and models...")
+scaler_path = get_absolute_path('../data/scaler.pkl')
+model_path = get_absolute_path('../data/model_test.pkl')
 
-# Prediction and comparison
-print("Predicting and comparing bike availability...")
+with open(scaler_path, 'rb') as f:
+    scaler = pickle.load(f)
+
+with open(model_path, 'rb') as f:
+    models = pickle.load(f)
+
+# Feature engineering: Add 'avg_bikes_hour_day'
+current_bike_data['avg_bikes_hour_day'] = current_bike_data.groupby(['stationcode', 'hour', 'day_of_week'])['numbikesavailable'].transform('mean')
+
+# Select features, including the unscaled versions for readability
+features = ['hour', 'day_of_week', 'nearby_stations_closed', 'nearby_stations_full', 'nearby_stations_empty', 
+            'likelihood_fill', 'likelihood_empty', 'avg_bikes_hour_day']
+
+# Ensure the current data has the same features
+current_bike_data[features] = current_bike_data[features].fillna(0)  # Fill any NaN values in features with 0
+
+# Normalize features (excluding the unscaled columns)
+print("Normalizing features...")
+scaled_features = scaler.transform(current_bike_data[features])
+current_bike_data[features] = scaled_features
+
+# Make predictions
+print("Making predictions and comparing with actual values...")
 results = []
 
 for station in tqdm(models.keys(), desc="Predicting for each station"):
-    station_data = velib_data[velib_data['name'] == station]
+    station_data = current_bike_data[current_bike_data['stationcode'] == station]
     if station_data.empty:
         continue
+    X = station_data[features]
+    y_true = station_data['numbikesavailable']
+    model = models[station]
+    y_pred = model.predict(X)
+    station_data.loc[:, 'predicted_bikesavailable'] = y_pred
+    station_data.loc[:, 'actual_bikesavailable'] = y_true
+    results.append(station_data)
 
-    X = station_data[original_features]
-    actuals = station_data['numbikesavailable'].values
-    predictions = models[station].predict(X)
+# Concatenate results
+results_df = pd.concat(results)
 
-    comparison = pd.DataFrame({
-        'station_name': station,
-        'date': station_data['date'],
-        'lat': station_data['lat'],
-        'lon': station_data['lon'],
-        'actual': actuals,
-        'predicted': predictions
-    })
+# Convert 'date' column to string for JSON serialization
+results_df['date'] = results_df['date'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    # Include all input features in the comparison DataFrame
-    for feature in original_features:
-        comparison[feature] = station_data[feature].values
+# Drop unnecessary columns to avoid duplication
+results_df = results_df.drop(columns=['date', 'lat', 'lon'])
 
-    results.append(comparison)
+# Add unscaled values to the final JSON output
+results_df['hour_unscaled'] = current_bike_data['hour_unscaled']
+results_df['day_of_week_unscaled'] = current_bike_data['day_of_week_unscaled']
 
-comparison_results = pd.concat(results, ignore_index=True)
+# Convert to JSON format
+results_json = results_df.to_dict(orient='records')
 
-# Save the results as a JSON file
-output_file_path = os.path.join(os.path.dirname(__file__), '../data/predictions_comparison.json')
-comparison_results.to_json(output_file_path, orient='records', date_format='iso')
+# Save to a JSON file
+results_json_path = get_absolute_path('../data/prediction_results.json')
+with open(results_json_path, 'w') as f:
+    json.dump(results_json, f, indent=4)
 
-print("Prediction and comparison completed. Results saved to predictions_comparison.json")
-
-# Calculate metrics
-mae = mean_absolute_error(comparison_results['actual'], comparison_results['predicted'])
-rmse = mean_squared_error(comparison_results['actual'], comparison_results['predicted'], squared=False)
-
-metrics = {
-    'MAE': mae,
-    'RMSE': rmse
-}
-
-# Save metrics to a JSON file
-metrics_file_path = os.path.join(os.path.dirname(__file__), '../data/prediction_metrics.json')
-with open(metrics_file_path, 'w') as f:
-    json.dump(metrics, f)
-
-print("Metrics calculated and saved to prediction_metrics.json")
+print(f"Predictions and comparisons saved to {results_json_path}")
