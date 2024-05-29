@@ -44,6 +44,17 @@ current_bike_data['day_of_week'] = current_bike_data['date'].dt.dayofweek
 current_bike_data['hour_unscaled'] = current_bike_data['date'].dt.hour
 current_bike_data['day_of_week_unscaled'] = current_bike_data['date'].dt.dayofweek
 
+# Adding lag features
+print("Adding lag features...")
+current_bike_data = current_bike_data.sort_values(by=['stationcode', 'date'])
+current_bike_data['lag_1_hour'] = current_bike_data.groupby('stationcode')['numbikesavailable'].shift(1)
+current_bike_data['lag_1_day'] = current_bike_data.groupby('stationcode')['numbikesavailable'].shift(24)
+
+# Adding trend features
+print("Adding trend features...")
+current_bike_data['rolling_mean_7_days'] = current_bike_data.groupby('stationcode')['numbikesavailable'].transform(lambda x: x.rolling(window=7*24, min_periods=1).mean())
+current_bike_data['rolling_mean_30_days'] = current_bike_data.groupby('stationcode')['numbikesavailable'].transform(lambda x: x.rolling(window=30*24, min_periods=1).mean())
+
 # Function to calculate nearby station status
 def calculate_nearby_station_status(data, radius=500, limit=5):  # Limit to the first 5 stations
     data = data.copy()
@@ -114,7 +125,8 @@ current_bike_data['avg_bikes_hour_day'] = current_bike_data.groupby(['stationcod
 
 # Select features, including the unscaled versions for readability
 features = ['hour', 'day_of_week', 'nearby_stations_closed', 'nearby_stations_full', 'nearby_stations_empty', 
-            'likelihood_fill', 'likelihood_empty', 'avg_bikes_hour_day']
+            'likelihood_fill', 'likelihood_empty', 'avg_bikes_hour_day', 'lag_1_hour', 'lag_1_day', 
+            'rolling_mean_7_days', 'rolling_mean_30_days']
 
 # Ensure the current data has the same features
 current_bike_data[features] = current_bike_data[features].fillna(0)  # Fill any NaN values in features with 0
