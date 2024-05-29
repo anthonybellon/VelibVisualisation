@@ -80,21 +80,49 @@ bike_data['day_of_week'] = bike_data['date'].dt.dayofweek
 
 print("Preprocessing complete.")
 
+# Function to convert degrees to radians for KDTree
+def deg_to_rad(coords):
+    return np.radians(coords)
+
 # Function to calculate nearby station status with adjustable radius
+from scipy.spatial import KDTree
+from geopy.distance import geodesic
+
 def calculate_nearby_station_status_adjustable(data, station, initial_radius=500, max_radius=2000, increment=500):
     station_data = data[data['stationcode'] == station]
     if station_data.empty:
         return None, station_data
 
-    coords = data[['lat', 'lon']].drop_duplicates().values
-    kd_tree = KDTree(coords)
+    # Extract unique coordinates and station codes
+    unique_coords = data[['lat', 'lon']].drop_duplicates().values
+    station_codes = data[['stationcode']].drop_duplicates().values.flatten()
+    kd_tree = KDTree(unique_coords)
+    
+    # Get the coordinates of the target station
     station_coords = station_data[['lat', 'lon']].iloc[0].values
+    target_station_code = station_data['stationcode'].iloc[0]
 
     radius = initial_radius
     while radius <= max_radius:
-        indices = kd_tree.query_ball_point(station_coords, radius / 1000.0)
-        nearby_stations = data.iloc[indices]
-        print(f"Found {len(nearby_stations)} nearby stations within {radius} meters for station {station}")
+        # Query the KDTree with radius in degrees converted to approximate meters
+        indices = kd_tree.query_ball_point(station_coords, radius / 1000.0 / 111.32)  # Approx conversion from meters to degrees
+        
+        # Filter out the target station itself
+        nearby_indices = [i for i in indices if station_codes[i] != target_station_code]
+        
+        # If the radius is greater than the initial radius and there are more than 5 stations, limit to 5
+        if radius > initial_radius and len(nearby_indices) > 5:
+            nearby_indices = nearby_indices[:5]
+        
+        nearby_stations = data.iloc[nearby_indices]
+        
+        # Check the number of nearby stations found
+
+        # Manually check distances for a few points to verify
+        for idx in nearby_indices[:5]:  # Check first 5 points for verification
+            point_coords = unique_coords[idx]  # Use original coordinates in degrees
+            distance = geodesic(station_coords, point_coords).meters
+
         if len(nearby_stations) >= 5:
             return nearby_stations, station_data
         
@@ -102,11 +130,12 @@ def calculate_nearby_station_status_adjustable(data, station, initial_radius=500
     
     return None, station_data
 
+
 # Apply the function to the bike data
 print("Calculating nearby station status...")
 
 # Optional limit for the number of stations to process
-station_limit = 10  # Set this to the desired limit, or None for all stations
+station_limit = 1  # Set to 1 for processing only the first station
 
 # Filter stations if a limit is specified
 stations = bike_data['stationcode'].unique()[:station_limit] if station_limit is not None else bike_data['stationcode'].unique()
