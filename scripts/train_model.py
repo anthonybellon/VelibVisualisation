@@ -1,5 +1,5 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
@@ -16,7 +16,7 @@ def get_absolute_path(relative_path):
     return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
 # Directory containing the cleaned JSON files
-clean_data_directory = get_absolute_path('../data/historical_data_clean')
+clean_data_directory = get_absolute_path('../data/historical_data_cleaned')
 
 # Load and concatenate JSON files
 print("Loading cleaned bike data...")
@@ -79,59 +79,43 @@ bike_data['day_of_week'] = bike_data['date'].dt.dayofweek
 
 print("Preprocessing complete.")
 
-# Function to calculate nearby station status
-def calculate_nearby_station_status(data, radius=500, limit=5):  # Limit to the first 5 stations
-    data = data.copy()
-    stations = data['stationcode'].unique()[:limit]  # Limit to the first 'limit' stations
+# Function to calculate nearby station status with adjustable radius
+def calculate_nearby_station_status_adjustable(data, station, initial_radius=500, max_radius=2000, increment=500):
+    station_data = data[data['stationcode'] == station]
+    if station_data.empty:
+        return None, station_data
 
     coords = data[['lat', 'lon']].drop_duplicates().values
     kd_tree = KDTree(coords)
+    station_coords = station_data[['lat', 'lon']].iloc[0].values
 
-    data['nearby_stations_closed'] = 0
-    data['nearby_stations_full'] = 0
-    data['nearby_stations_empty'] = 0
-    data['likelihood_fill'] = 0.0
-    data['likelihood_empty'] = 0.0
-
-    for station in tqdm(stations, desc="Calculating nearby station status"):
-        station_data = data[data['stationcode'] == station]
-        station_coords = station_data[['lat', 'lon']].iloc[0].values
-
+    radius = initial_radius
+    while radius <= max_radius:
         indices = kd_tree.query_ball_point(station_coords, radius / 1000.0)
         nearby_stations = data.iloc[indices]
-
-        for index, row in station_data.iterrows():
-            date_filtered_nearby_stations = nearby_stations[nearby_stations['date'] == row['date']]
-            nearby_stations_closed = date_filtered_nearby_stations['is_installed'].apply(lambda x: 1 if x == "NON" else 0).sum()
-            nearby_stations_full = (date_filtered_nearby_stations['numbikesavailable'] == date_filtered_nearby_stations['capacity']).sum()
-            nearby_stations_empty = (date_filtered_nearby_stations['numbikesavailable'] == 0).sum()
-
-            data.at[index, 'nearby_stations_closed'] = nearby_stations_closed
-            data.at[index, 'nearby_stations_full'] = nearby_stations_full
-            data.at[index, 'nearby_stations_empty'] = nearby_stations_empty
-
-            total_nearby_stations = len(date_filtered_nearby_stations)
-            if total_nearby_stations > 0:
-                likelihood_fill = nearby_stations_full / total_nearby_stations
-                likelihood_empty = nearby_stations_empty / total_nearby_stations
-            else:
-                likelihood_fill = 0.0
-                likelihood_empty = 0.0
-
-            data.at[index, 'likelihood_fill'] = likelihood_fill
-            data.at[index, 'likelihood_empty'] = likelihood_empty
-
-            # Adjust likelihood based on nearby station statuses
-            if nearby_stations_full > total_nearby_stations / 2:
-                data.at[index, 'likelihood_fill'] *= 1.5  # Increase likelihood of filling up
-            if nearby_stations_empty > total_nearby_stations / 2:
-                data.at[index, 'likelihood_empty'] *= 1.5  # Increase likelihood of emptying
-
-    return data
+        
+        if len(nearby_stations) >= 5:
+            return nearby_stations, station_data
+        
+        radius += increment
+    
+    return None, station_data
 
 # Apply the function to the bike data
 print("Calculating nearby station status...")
-bike_data = calculate_nearby_station_status(bike_data, limit=5)
+
+# Optional limit for the number of stations to process
+station_limit = 10  # Set this to the desired limit, or None for all stations
+
+# Filter stations if a limit is specified
+stations = bike_data['stationcode'].unique()[:station_limit] if station_limit is not None else bike_data['stationcode'].unique()
+
+# Initialize the columns for nearby station statuses
+bike_data['nearby_stations_closed'] = 0
+bike_data['nearby_stations_full'] = 0
+bike_data['nearby_stations_empty'] = 0
+bike_data['likelihood_fill'] = 0.0
+bike_data['likelihood_empty'] = 0.0
 
 # Feature engineering: Add 'avg_bikes_hour_day'
 bike_data['avg_bikes_hour_day'] = bike_data.groupby(['stationcode', 'hour', 'day_of_week'])['numbikesavailable'].transform('mean')
@@ -148,16 +132,28 @@ bike_data[features] = scaler.fit_transform(bike_data[features])
 
 # Train a model for each station
 models = {}
-stations = bike_data['stationcode'].unique()[:5]  # Limit to the first 5 stations
 
 print(f"Found {len(stations)} unique stations. Training models...")
 
 for i, station in enumerate(tqdm(stations, desc="Training models", unit="station")):
-    station_data = bike_data[bike_data['stationcode'] == station]
+    nearby_stations, station_data = calculate_nearby_station_status_adjustable(bike_data, station)
+    
+    if nearby_stations is None or len(station_data) < 5:
+        print(f"Skipping station {station} due to insufficient nearby stations or data.")
+        continue
+
     X = station_data[features]
     y = station_data[target]
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    if len(X_train) < 5:
+        print(f"Skipping station {station} due to insufficient data.")
+        continue
+    
+    # Dynamically adjust the number of splits
+    n_splits = min(5, len(X_train))
+    cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     # Hyperparameter tuning using Grid Search
     param_grid = {
@@ -166,13 +162,13 @@ for i, station in enumerate(tqdm(stations, desc="Training models", unit="station
         'min_samples_split': [2, 5, 10],
         'min_samples_leaf': [1, 2, 4]
     }
-    grid_search = GridSearchCV(RandomForestRegressor(random_state=42), param_grid, cv=5, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid_search = GridSearchCV(RandomForestRegressor(random_state=42), param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
     grid_search.fit(X_train, y_train)
 
     best_model = grid_search.best_estimator_
 
     # Cross-Validation score
-    cv_score = cross_val_score(best_model, X_train, y_train, cv=5, scoring='neg_mean_squared_error')
+    cv_score = cross_val_score(best_model, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
     print(f"Cross-Validation Score for station {station}: {cv_score.mean()}")
 
     # Fit and evaluate the model
@@ -194,7 +190,7 @@ with open(scaler_file_path, 'wb') as f:
     pickle.dump(scaler, f)
     print(f"Scaler saved to {scaler_file_path}")
 
-model_file_path = get_absolute_path('../data/model_test.pkl')
+model_file_path = get_absolute_path('../data/model.pkl')
 with open(model_file_path, 'wb') as f:
     pickle.dump(models, f)
     print(f"Models saved to {model_file_path}")
