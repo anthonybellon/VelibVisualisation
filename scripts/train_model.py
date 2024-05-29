@@ -78,6 +78,19 @@ print("Adding hour and day of week...")
 bike_data['hour'] = bike_data['date'].dt.hour
 bike_data['day_of_week'] = bike_data['date'].dt.dayofweek
 
+# Adding lag features
+print("Adding lag features...")
+bike_data = bike_data.sort_values(by=['stationcode', 'date'])
+
+# Lag features for the number of bikes available
+bike_data['lag_1_hour'] = bike_data.groupby('stationcode')['numbikesavailable'].shift(1)
+bike_data['lag_1_day'] = bike_data.groupby('stationcode')['numbikesavailable'].shift(24)
+
+# Adding trend features
+print("Adding trend features...")
+bike_data['rolling_mean_7_days'] = bike_data.groupby('stationcode')['numbikesavailable'].transform(lambda x: x.rolling(window=7*24, min_periods=1).mean())
+bike_data['rolling_mean_30_days'] = bike_data.groupby('stationcode')['numbikesavailable'].transform(lambda x: x.rolling(window=30*24, min_periods=1).mean())
+
 print("Preprocessing complete.")
 
 # Function to convert degrees to radians for KDTree
@@ -85,9 +98,6 @@ def deg_to_rad(coords):
     return np.radians(coords)
 
 # Function to calculate nearby station status with adjustable radius
-from scipy.spatial import KDTree
-from geopy.distance import geodesic
-
 def calculate_nearby_station_status_adjustable(data, station, initial_radius=500, max_radius=2000, increment=500):
     station_data = data[data['stationcode'] == station]
     if station_data.empty:
@@ -130,12 +140,11 @@ def calculate_nearby_station_status_adjustable(data, station, initial_radius=500
     
     return None, station_data
 
-
 # Apply the function to the bike data
 print("Calculating nearby station status...")
 
 # Optional limit for the number of stations to process
-station_limit = 1  # Set to 1 for processing only the first station
+station_limit = 10  # Set to 1 for processing only the first station
 
 # Filter stations if a limit is specified
 stations = bike_data['stationcode'].unique()[:station_limit] if station_limit is not None else bike_data['stationcode'].unique()
@@ -152,7 +161,8 @@ bike_data['avg_bikes_hour_day'] = bike_data.groupby(['stationcode', 'hour', 'day
 
 # Select features and target
 features = ['hour', 'day_of_week', 'nearby_stations_closed', 'nearby_stations_full', 'nearby_stations_empty', 
-            'likelihood_fill', 'likelihood_empty', 'avg_bikes_hour_day']
+            'likelihood_fill', 'likelihood_empty', 'avg_bikes_hour_day', 'lag_1_hour', 'lag_1_day', 
+            'rolling_mean_7_days', 'rolling_mean_30_days']
 target = 'numbikesavailable'
 
 # Normalize features
