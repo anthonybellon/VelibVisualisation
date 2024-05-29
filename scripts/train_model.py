@@ -1,5 +1,5 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, KFold
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, cross_val_score, KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
@@ -10,6 +10,7 @@ from geopy.distance import geodesic
 import numpy as np
 from scipy.spatial import KDTree
 import json
+from scipy.stats import randint
 
 # Function to get the absolute path relative to the script location
 def get_absolute_path(relative_path):
@@ -93,7 +94,7 @@ def calculate_nearby_station_status_adjustable(data, station, initial_radius=500
     while radius <= max_radius:
         indices = kd_tree.query_ball_point(station_coords, radius / 1000.0)
         nearby_stations = data.iloc[indices]
-        
+        print(f"Found {len(nearby_stations)} nearby stations within {radius} meters for station {station}")
         if len(nearby_stations) >= 5:
             return nearby_stations, station_data
         
@@ -135,6 +136,14 @@ models = {}
 
 print(f"Found {len(stations)} unique stations. Training models...")
 
+# Hyperparameter space for RandomizedSearchCV
+param_dist = {
+    'n_estimators': randint(50, 200),
+    'max_depth': [10, 20, None],
+    'min_samples_split': randint(2, 10),
+    'min_samples_leaf': randint(1, 4)
+}
+
 for i, station in enumerate(tqdm(stations, desc="Training models", unit="station")):
     nearby_stations, station_data = calculate_nearby_station_status_adjustable(bike_data, station)
     
@@ -155,17 +164,11 @@ for i, station in enumerate(tqdm(stations, desc="Training models", unit="station
     n_splits = min(5, len(X_train))
     cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    # Hyperparameter tuning using Grid Search
-    param_grid = {
-        'n_estimators': [50, 100, 200],
-        'max_depth': [10, 20, None],
-        'min_samples_split': [2, 5, 10],
-        'min_samples_leaf': [1, 2, 4]
-    }
-    grid_search = GridSearchCV(RandomForestRegressor(random_state=42), param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
-    grid_search.fit(X_train, y_train)
+    # Hyperparameter tuning using Randomized Search
+    random_search = RandomizedSearchCV(RandomForestRegressor(random_state=42), param_distributions=param_dist, n_iter=20, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1, random_state=42)
+    random_search.fit(X_train, y_train)
 
-    best_model = grid_search.best_estimator_
+    best_model = random_search.best_estimator_
 
     # Cross-Validation score
     cv_score = cross_val_score(best_model, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
@@ -190,7 +193,7 @@ with open(scaler_file_path, 'wb') as f:
     pickle.dump(scaler, f)
     print(f"Scaler saved to {scaler_file_path}")
 
-model_file_path = get_absolute_path('../data/model.pkl')
+model_file_path = get_absolute_path('../data/model_randomizedcv.pkl')
 with open(model_file_path, 'wb') as f:
     pickle.dump(models, f)
     print(f"Models saved to {model_file_path}")

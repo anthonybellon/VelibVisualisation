@@ -101,7 +101,7 @@ current_bike_data = calculate_nearby_station_status(current_bike_data, limit=5)
 # Load the scaler and models
 print("Loading scaler and models...")
 scaler_path = get_absolute_path('../data/scaler.pkl')
-model_path = get_absolute_path('../data/model_test.pkl')
+model_path = get_absolute_path('../data/model_randomizedcv.pkl')
 
 with open(scaler_path, 'rb') as f:
     scaler = pickle.load(f)
