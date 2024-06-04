@@ -6,6 +6,7 @@ from tqdm import tqdm
 import json
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial import KDTree
+from collections import defaultdict  # Import defaultdict
 
 # Function to get the absolute path relative to the script location
 def get_absolute_path(relative_path):
@@ -13,7 +14,7 @@ def get_absolute_path(relative_path):
 
 # Load the current data
 print("Loading current bike data...")
-current_data_path = get_absolute_path('../data/velib_data.json')
+current_data_path = get_absolute_path('../data/weekly_velib_data.json')
 with open(current_data_path, 'r') as f:
     current_data = json.load(f)
 
@@ -43,6 +44,10 @@ current_bike_data['day_of_week'] = current_bike_data['date'].dt.dayofweek
 # Adding human-readable hour and day_of_week columns
 current_bike_data['hour_unscaled'] = current_bike_data['date'].dt.hour
 current_bike_data['day_of_week_unscaled'] = current_bike_data['date'].dt.dayofweek
+
+# # Filter out stations with `stationcode` containing `_relais`
+# current_bike_data = current_bike_data[~current_bike_data['stationcode'].str.contains('_relais')]
+
 
 # Adding lag features
 print("Adding lag features...")
@@ -154,8 +159,6 @@ for station in tqdm(models.keys(), desc="Predicting for each station"):
 
 # Concatenate results
 results_df = pd.concat(results)
-# Convert 'date' column to string for JSON serialization
-results_df['date'] = results_df['date'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 # Drop unnecessary columns to avoid duplication
 results_df = results_df.drop(columns=['date', 'lat', 'lon'])
@@ -163,6 +166,9 @@ results_df = results_df.drop(columns=['date', 'lat', 'lon'])
 # Add unscaled values to the final JSON output
 results_df['hour_unscaled'] = current_bike_data['hour_unscaled']
 results_df['day_of_week_unscaled'] = current_bike_data['day_of_week_unscaled']
+
+# Filter to include only necessary columns
+results_df = results_df[['stationcode', 'name', 'is_installed', 'capacity', 'numdocksavailable', 'numbikesavailable', 'mechanical', 'ebike', 'is_renting', 'is_returning', 'coordonnees_geo','predicted_bikesavailable', 'actual_bikesavailable', 'hour_unscaled', 'day_of_week_unscaled']]
 
 # Convert to JSON format
 results_json = results_df.to_dict(orient='records')
@@ -176,17 +182,21 @@ print(f"Predictions and comparisons saved to {results_json_path}")
 
 # Organize predictions by station, day, and hour
 print("Organizing predictions by station, day, and hour...")
-organized_predictions = {}
+organized_predictions = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 for station in results_df['stationcode'].unique():
-    organized_predictions[station] = {day: {hour: [] for hour in range(24)} for day in range(7)}
     station_data = results_df[results_df['stationcode'] == station]
     for index, row in station_data.iterrows():
         day = row['day_of_week_unscaled']
         hour = row['hour_unscaled']
         organized_predictions[station][day][hour].append(row['predicted_bikesavailable'])
 
+# Convert to a normal dictionary before saving
+organized_predictions = {k: dict(v) for k, v in organized_predictions.items()}
+for k, v in organized_predictions.items():
+    organized_predictions[k] = {kk: dict(vv) for kk, vv in v.items()}
+
 # Save organized predictions to a JSON file
-organized_predictions_path = get_absolute_path('../data/organized_predictions.json')
+organized_predictions_path = get_absolute_path('../data/compressed_predictions.json')
 with open(organized_predictions_path, 'w') as f:
     json.dump(organized_predictions, f, indent=4)
 

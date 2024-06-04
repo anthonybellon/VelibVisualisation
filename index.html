@@ -97,106 +97,100 @@
       // Function to create popup content
       function createPopupContent(station) {
         return `<div class="station-info">
-                <strong>${station.name}</strong><br>
-                Actual: ${station.actual}<br>
-                Predicted: ${station.predicted.toFixed(2)}
-              </div>`;
+                    <strong>${station.name}</strong><br>
+                    Actual: ${station.actual}<br>
+                    Predicted: ${station.predicted.toFixed(2)}
+                  </div>`;
       }
 
       // Function to fetch and plot data
-      function fetchDataAndPlot(dataType) {
-        var stationsPromise = fetch("./data/prediction_results.json").then(
-          (response) => response.json()
+      async function fetchDataAndPlot(dataType) {
+        const stationsResponse = await fetch("./data/prediction_results.json");
+        const stations = await stationsResponse.json();
+        const predictionsResponse = await fetch(
+          "./data/compressed_predictions.json"
         );
-        var predictionsPromise = fetch(
-          "./data/organized_predictions.json"
-        ).then((response) => response.json());
-        var actualDataPromise = fetch(
+        const predictions = await predictionsResponse.json();
+        const actualDataResponse = await fetch(
           "./data/velib_data_single_time.json"
-        ).then((response) => response.json());
+        );
+        const actualData = await actualDataResponse.json();
 
-        Promise.all([stationsPromise, predictionsPromise, actualDataPromise])
-          .then(([stations, predictions, actualData]) => {
-            var heatData = [];
-            var selectedDay = parseInt(
-              document.getElementById("daySelect").value
+        var heatData = [];
+        var selectedDay = parseInt(document.getElementById("daySelect").value);
+        var selectedHour = parseInt(
+          document.getElementById("hourSelect").value
+        );
+
+        console.log("Selected Day:", selectedDay);
+        console.log("Selected Hour:", selectedHour);
+
+        stations.forEach(function (station) {
+          if (station.coordonnees_geo.lat && station.coordonnees_geo.lon) {
+            var stationPredictions = predictions[station.stationcode];
+            var actualValue = 0;
+            var predictedValue = 0;
+
+            // Find the actual value in the actual data
+            var actualStationData = actualData.find(
+              (s) => s.stationcode === station.stationcode
             );
-            var selectedHour = parseInt(
-              document.getElementById("hourSelect").value
+            if (actualStationData) {
+              actualValue = actualStationData.numbikesavailable;
+            }
+
+            // Get the predicted value for the selected day and hour
+            if (
+              stationPredictions &&
+              stationPredictions[selectedDay] &&
+              stationPredictions[selectedDay][selectedHour]
+            ) {
+              var predictionsArray =
+                stationPredictions[selectedDay][selectedHour];
+              predictedValue =
+                predictionsArray.length > 0
+                  ? predictionsArray.reduce((a, b) => a + b, 0) /
+                    predictionsArray.length
+                  : 0;
+            }
+
+            console.log(
+              "Station:",
+              station.stationcode,
+              "Actual Value:",
+              actualValue,
+              "Predicted Value:",
+              predictedValue
             );
 
-            console.log("Selected Day:", selectedDay);
-            console.log("Selected Hour:", selectedHour);
+            var value = dataType === "actual" ? actualValue : predictedValue;
+            heatData.push([
+              station.coordonnees_geo.lat,
+              station.coordonnees_geo.lon,
+              value,
+            ]);
 
-            stations.forEach(function (station) {
-              if (station.coordonnees_geo.lat && station.coordonnees_geo.lon) {
-                var stationPredictions = predictions[station.stationcode];
-                var actualValue = 0;
-                var predictedValue = 0;
+            // Add markers with popup
+            var marker = L.marker([
+              station.coordonnees_geo.lat,
+              station.coordonnees_geo.lon,
+            ])
+              .bindPopup(
+                createPopupContent({
+                  name: station.name,
+                  actual: actualValue,
+                  predicted: predictedValue,
+                })
+              )
+              .on("click", () => {
+                showStationDetails(station.stationcode, predictions);
+              });
 
-                // Find the actual value in the actual data
-                var actualStationData = actualData.find(
-                  (s) => s.stationcode === station.stationcode
-                );
-                if (actualStationData) {
-                  actualValue = actualStationData.numbikesavailable;
-                }
-
-                // Get the predicted value for the selected day and hour
-                if (
-                  stationPredictions &&
-                  stationPredictions[selectedDay] &&
-                  stationPredictions[selectedDay][selectedHour]
-                ) {
-                  var predictionsArray =
-                    stationPredictions[selectedDay][selectedHour];
-                  predictedValue =
-                    predictionsArray.length > 0
-                      ? predictionsArray.reduce((a, b) => a + b, 0) /
-                        predictionsArray.length
-                      : 0;
-                }
-
-                console.log(
-                  "Station:",
-                  station.stationcode,
-                  "Actual Value:",
-                  actualValue,
-                  "Predicted Value:",
-                  predictedValue
-                );
-
-                var value =
-                  dataType === "actual" ? actualValue : predictedValue;
-                heatData.push([
-                  station.coordonnees_geo.lat,
-                  station.coordonnees_geo.lon,
-                  value,
-                ]);
-
-                // Add markers with popup
-                var marker = L.marker([
-                  station.coordonnees_geo.lat,
-                  station.coordonnees_geo.lon,
-                ])
-                  .bindPopup(
-                    createPopupContent({
-                      name: station.name,
-                      actual: actualValue,
-                      predicted: predictedValue,
-                    })
-                  )
-                  .on("click", () => {
-                    showStationDetails(station.stationcode, predictions);
-                  });
-
-                markersLayer.addLayer(marker);
-              }
-            });
-            console.log("Heat Data:", heatData);
-            heatLayer.setLatLngs(heatData);
-          })
-          .catch((error) => console.error("Error fetching data:", error));
+            markersLayer.addLayer(marker);
+          }
+        });
+        console.log("Heat Data:", heatData);
+        heatLayer.setLatLngs(heatData);
       }
 
       // Function to show heatmap based on data type

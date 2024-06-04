@@ -10,7 +10,7 @@ def fetch_data():
     all_stations_data = []
     start = 0
     limit = 100
-    total_stations = 1468
+    total_stations = 1471
 
     while start < total_stations:
         response = requests.get(API_URL, params={"start": start, "limit": limit})

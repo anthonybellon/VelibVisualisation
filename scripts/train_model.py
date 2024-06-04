@@ -144,7 +144,7 @@ def calculate_nearby_station_status_adjustable(data, station, initial_radius=500
 print("Calculating nearby station status...")
 
 # Optional limit for the number of stations to process
-station_limit = 20  # Set to 1 for processing only the first station
+station_limit = 500  # Set to 1 for processing only the first station
 
 # Filter stations if a limit is specified
 stations = bike_data['stationcode'].unique()[:station_limit] if station_limit is not None else bike_data['stationcode'].unique()
