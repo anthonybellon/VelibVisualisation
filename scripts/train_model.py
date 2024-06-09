@@ -10,16 +10,10 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
 from scipy.stats import randint
 from tqdm import tqdm
-from utils import get_absolute_path, calculate_nearby_station_status_adjustable, create_features
+from utils import get_absolute_path, calculate_nearby_station_status_adjustable, create_features, load_feature_names
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-def load_feature_names():
-    feature_name_path = get_absolute_path('../data/feature_names.json')
-    with open(feature_name_path, 'r') as file:
-        feature_names = json.load(file)
-    return feature_names
 
 def train_model(data, stations, target='numbikesavailable'):
     logger.info("Training models...")
@@ -59,14 +53,16 @@ def train_model(data, stations, target='numbikesavailable'):
             station_data['likelihood_empty'] = station_data['nearby_stations_empty'] / (len(nearby_stations) + 1e-5)
             selected_features = base_features + additional_features
 
-        missing_features = [feat for feat in selected_features if feat not in station_data.columns]
+        # Ensure only numeric features are selected
+        numeric_features = station_data[selected_features].select_dtypes(include=[np.number]).columns.tolist()
+        missing_features = [feat for feat in numeric_features if feat not in station_data.columns]
         if missing_features:
-            logger.warning(f"Missing features for station {station}: %s", missing_features)
+            logger.warning(f"Missing features for station {station}: {missing_features}")
             continue
 
-        station_data[selected_features] = scaler.fit_transform(station_data[selected_features])
+        station_data[numeric_features] = scaler.fit_transform(station_data[numeric_features])
 
-        X = station_data[selected_features]
+        X = station_data[numeric_features]
         y = station_data[target]
 
         if len(X) < 2:
@@ -128,7 +124,7 @@ def main():
     if bike_data.empty:
         raise ValueError("The processed bike data is empty. Please check the Parquet file and its loading process.")
     
-    stations = bike_data['stationcode'].unique()
+    stations = bike_data['stationcode'].unique()[:150]  # Process only the first 150 stations for testing
     batch_size = 100
 
     all_models = {}

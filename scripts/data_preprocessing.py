@@ -44,7 +44,10 @@ def preprocess_data():
     }
 
     for station_code, new_coords in station_coord_updates.items():
-        bike_data.loc[bike_data['stationcode'] == station_code, ['lat', 'lon']] = new_coords['lat'], new_coords['lon']
+        bike_data.loc[bike_data['stationcode'] == station_code, ['lat', 'lon']] = (
+            np.float32(new_coords['lat']),
+            np.float32(new_coords['lon'])
+        )
 
     bike_data = bike_data.drop(columns=['code_insee_commune'], errors='ignore')
 

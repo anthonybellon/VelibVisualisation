@@ -84,9 +84,19 @@ def create_features(data):
 
     data['avg_bikes_hour_day'] = data.groupby(['stationcode', 'hour', 'day_of_week'])['numbikesavailable'].transform('mean')
 
+    # Create indicator variables for missing values
+    data['lag_1_hour_missing'] = data['lag_1_hour'].isna().astype(int)
+    data['lag_1_day_missing'] = data['lag_1_day'].isna().astype(int)
+
+    # Fill NaN values with the mean of the column
+    data['lag_1_hour'] = data['lag_1_hour'].fillna(data['lag_1_hour'].mean())
+    data['lag_1_day'] = data['lag_1_day'].fillna(data['lag_1_day'].mean())
+
     report_infinite_and_large_values(data)
 
     return data
+
+
 
 def save_json(data, file_path):
     """Save data to a JSON file."""
