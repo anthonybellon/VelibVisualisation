@@ -17,20 +17,6 @@
         flex-direction: column;
         align-items: center;
       }
-      .button,
-      select,
-      .toggle {
-        padding: 10px;
-        margin: 5px;
-        cursor: pointer;
-        background-color: #007bff;
-        color: white;
-        border: none;
-        border-radius: 5px;
-      }
-      .button:hover {
-        background-color: #0056b3;
-      }
       .title {
         font-size: 18px;
         font-weight: bold;
@@ -40,46 +26,13 @@
   </head>
   <body>
     <div class="controls">
-      <div>
-        <select id="daySelect">
-          <option value="0">Sunday</option>
-          <option value="1">Monday</option>
-          <option value="2">Tuesday</option>
-          <option value="3">Wednesday</option>
-          <option value="4">Thursday</option>
-          <option value="5">Friday</option>
-          <option value="6">Saturday</option>
-        </select>
-        <select id="hourSelect">
-          <script>
-            for (let i = 0; i < 24; i++) {
-              document.write(`<option value="${i}">${i}:00</option>`);
-            }
-          </script>
-        </select>
-      </div>
-      <div>
-        <button class="button" onclick="showHeatmap('actual')">
-          Show Actual Data
-        </button>
-        <button class="button" onclick="showHeatmap('predicted')">
-          Show Predicted Data
-        </button>
-      </div>
-      <div>
-        <input
-          type="checkbox"
-          id="toggleMarkers"
-          class="toggle"
-          onchange="toggleMarkers()"
-        />
-        Show Station Points
-      </div>
-      <div id="dataTitle" class="title">Showing Actual Data</div>
+      <div class="title">Paris Bike Stations</div>
+      <input type="text" id="searchInput" placeholder="Enter station code" />
+      <button onclick="searchStation()">Search</button>
+      <div id="searchResult"></div>
     </div>
     <div id="map"></div>
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
     <script>
       // Initialize the map
       var map = L.map("map").setView([48.8566, 2.3522], 12);
@@ -90,138 +43,66 @@
           '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       }).addTo(map);
 
-      // Heatmap layer
-      var heatLayer = L.heatLayer([], { radius: 25 }).addTo(map);
-      var markersLayer = L.layerGroup().addTo(map);
+      var stationsData;
 
       // Function to create popup content
       function createPopupContent(station) {
         return `<div class="station-info">
                     <strong>${station.name}</strong><br>
-                    Actual: ${station.actual}<br>
-                    Predicted: ${station.predicted.toFixed(2)}
+                    Station Code: ${station.stationcode}
                   </div>`;
       }
 
       // Function to fetch and plot data
-      async function fetchDataAndPlot(dataType) {
-        const stationsResponse = await fetch("./data/prediction_results.json");
-        const stations = await stationsResponse.json();
-        const predictionsResponse = await fetch(
-          "./data/compressed_predictions.json"
+      async function fetchDataAndPlot() {
+        const response = await fetch(
+          "data/velib-disponibilite-en-temps-reel.json"
         );
-        const predictions = await predictionsResponse.json();
-        const actualDataResponse = await fetch(
-          "./data/velib_data_single_time.json"
-        );
-        const actualData = await actualDataResponse.json();
+        const data = await response.json();
+        stationsData = data;
 
-        var heatData = [];
-        var selectedDay = parseInt(document.getElementById("daySelect").value);
-        var selectedHour = parseInt(
-          document.getElementById("hourSelect").value
-        );
-
-        console.log("Selected Day:", selectedDay);
-        console.log("Selected Hour:", selectedHour);
-
-        stations.forEach(function (station) {
+        data.forEach(function (station) {
+          console.log(station.stationcode); // Log each station code
           if (station.coordonnees_geo.lat && station.coordonnees_geo.lon) {
-            var stationPredictions = predictions[station.stationcode];
-            var actualValue = 0;
-            var predictedValue = 0;
-
-            // Find the actual value in the actual data
-            var actualStationData = actualData.find(
-              (s) => s.stationcode === station.stationcode
-            );
-            if (actualStationData) {
-              actualValue = actualStationData.numbikesavailable;
-            }
-
-            // Get the predicted value for the selected day and hour
-            if (
-              stationPredictions &&
-              stationPredictions[selectedDay] &&
-              stationPredictions[selectedDay][selectedHour]
-            ) {
-              var predictionsArray =
-                stationPredictions[selectedDay][selectedHour];
-              predictedValue =
-                predictionsArray.length > 0
-                  ? predictionsArray.reduce((a, b) => a + b, 0) /
-                    predictionsArray.length
-                  : 0;
-            }
-
-            console.log(
-              "Station:",
-              station.stationcode,
-              "Actual Value:",
-              actualValue,
-              "Predicted Value:",
-              predictedValue
-            );
-
-            var value = dataType === "actual" ? actualValue : predictedValue;
-            heatData.push([
-              station.coordonnees_geo.lat,
-              station.coordonnees_geo.lon,
-              value,
-            ]);
-
             // Add markers with popup
             var marker = L.marker([
               station.coordonnees_geo.lat,
               station.coordonnees_geo.lon,
             ])
-              .bindPopup(
-                createPopupContent({
-                  name: station.name,
-                  actual: actualValue,
-                  predicted: predictedValue,
-                })
-              )
-              .on("click", () => {
-                showStationDetails(station.stationcode, predictions);
+              .bindPopup(createPopupContent(station))
+              .on("mouseover", function (e) {
+                this.openPopup();
+              })
+              .on("mouseout", function (e) {
+                this.closePopup();
               });
 
-            markersLayer.addLayer(marker);
+            marker.addTo(map);
           }
         });
-        console.log("Heat Data:", heatData);
-        heatLayer.setLatLngs(heatData);
       }
 
-      // Function to show heatmap based on data type
-      function showHeatmap(dataType) {
-        document.getElementById("dataTitle").innerText =
-          dataType === "actual"
-            ? "Showing Actual Data"
-            : "Showing Predicted Data";
-        markersLayer.clearLayers();
-        fetchDataAndPlot(dataType);
-      }
+      // Function to search for a station
+      function searchStation() {
+        const searchInput = document
+          .getElementById("searchInput")
+          .value.trim()
+          .toLowerCase();
+        const resultDiv = document.getElementById("searchResult");
 
-      // Function to toggle marker visibility
-      function toggleMarkers() {
-        if (document.getElementById("toggleMarkers").checked) {
-          map.addLayer(markersLayer);
+        const foundStation = stationsData.find(
+          (station) => station.stationcode.trim().toLowerCase() === searchInput
+        );
+
+        if (foundStation) {
+          resultDiv.innerHTML = `Found: ${foundStation.name} (Code: ${foundStation.stationcode})`;
         } else {
-          map.removeLayer(markersLayer);
+          resultDiv.innerHTML = "Station not found";
         }
       }
 
-      // Event listeners to update heatmap on change
-      document
-        .getElementById("daySelect")
-        .addEventListener("change", () => showHeatmap("predicted"));
-      document
-        .getElementById("hourSelect")
-        .addEventListener("change", () => showHeatmap("predicted"));
-
-      // Initially show actual data
-      showHeatmap("actual");
+      // Fetch and plot the data
+      fetchDataAndPlot();
     </script>
   </body>
 </html>
