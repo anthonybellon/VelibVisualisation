@@ -133,7 +133,7 @@ def calculate_nearby_station_status_adjustable(data, station, initial_radius=500
 print("Calculating nearby station status...")
 
 # Optional limit for the number of stations to process
-station_limit = None  # Set to 1 for processing only the first station
+station_limit = 2  # Set to 1 for processing only the first station
 
 # Filter stations if a limit is specified
 stations = bike_data['stationcode'].unique()[:station_limit] if station_limit is not None else bike_data['stationcode'].unique()
@@ -179,9 +179,9 @@ param_dist = {
     'min_samples_leaf': randint(1, 4)
 }
 
-# Skip the first 99 stations and start from the 100th station
-for i, station in enumerate(tqdm(stations[100:], desc="Training models", unit="station")):
-    actual_station_index = i + 100  # To display the correct station index
+# Process all stations
+for i, station in enumerate(tqdm(stations, desc="Training models", unit="station")):
+    actual_station_index = i  # To display the correct station index
     nearby_stations, station_data = calculate_nearby_station_status_adjustable(bike_data, station)
 
     # If we have fewer than 5 nearby stations, we omit the additional features
