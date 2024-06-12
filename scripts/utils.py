@@ -91,12 +91,9 @@ def create_features(data):
     # Fill NaN values with the mean of the column
     data['lag_1_hour'] = data['lag_1_hour'].fillna(data['lag_1_hour'].mean())
     data['lag_1_day'] = data['lag_1_day'].fillna(data['lag_1_day'].mean())
-
+    
     report_infinite_and_large_values(data)
-
     return data
-
-
 
 def save_json(data, file_path):
     """Save data to a JSON file."""

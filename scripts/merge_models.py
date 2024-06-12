@@ -1,46 +1,44 @@
 import os
 import pickle
-from utils import get_absolute_path
 
-def merge_models_and_scalers():
-    all_models = {}
-    all_scalers = {}
-    all_nearby_station_results = {}
+# Function to get the absolute path relative to the script location
+def get_absolute_path(relative_path):
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
-    current_batch = 0
-    while os.path.exists(get_absolute_path(f'../data/model_batch_{current_batch}.pkl')):
-        model_file_path = get_absolute_path(f'../data/model_batch_{current_batch}.pkl')
-        scaler_file_path = get_absolute_path(f'../data/scaler_batch_{current_batch}.pkl')
-        nearby_stations_file_path = get_absolute_path(f'../data/nearby_stations_batch_{current_batch}.pkl')
+# Directory containing the saved model and scaler batch files
+save_directory = get_absolute_path('../data')
 
-        with open(model_file_path, 'rb') as f:
-            models = pickle.load(f)
-        with open(scaler_file_path, 'rb') as f:
-            scalers = pickle.load(f)
-        with open(nearby_stations_file_path, 'rb') as f:
-            nearby_station_results = pickle.load(f)
+# Load all scaler and model batch files
+scaler_files = [f for f in os.listdir(save_directory) if f.startswith('scaler_batch_') and f.endswith('.pkl')]
+model_files = [f for f in os.listdir(save_directory) if f.startswith('model_batch_') and f.endswith('.pkl')]
 
-        all_models.update(models)
-        all_scalers.update(scalers)
-        all_nearby_station_results.update(nearby_station_results)
+# Sort files by batch number
+scaler_files.sort(key=lambda x: int(x.split('_')[2].split('.')[0]))
+model_files.sort(key=lambda x: int(x.split('_')[2].split('.')[0]))
 
-        current_batch += 1
+# Dictionary to hold all models and scalers
+combined_models = {}
+combined_scalers = {}
 
-    model_file_path = get_absolute_path('../data/model_final.pkl')
-    scaler_file_path = get_absolute_path('../data/scaler_final.pkl')
-    nearby_stations_file_path = get_absolute_path('../data/nearby_stations_final.pkl')
+# Load and combine scalers
+for scaler_file in scaler_files:
+    batch_index = int(scaler_file.split('_')[2].split('.')[0])
+    scaler_path = os.path.join(save_directory, scaler_file)
+    with open(scaler_path, 'rb') as f:
+        scaler = pickle.load(f)
+        combined_scalers[batch_index] = scaler  # Use batch_index instead of idx
 
-    with open(model_file_path, 'wb') as f:
-        pickle.dump(all_models, f)
-    print(f"Final models saved to {model_file_path}")
+# Load and combine models
+for model_file in model_files:
+    batch_index = int(model_file.split('_')[2].split('.')[0])
+    model_path = os.path.join(save_directory, model_file)
+    with open(model_path, 'rb') as f:
+        models = pickle.load(f)
+        for station, model in models.items():
+            combined_models[station] = {'model': model, 'scaler_idx': batch_index}  # Use batch_index
 
-    with open(scaler_file_path, 'wb') as f:
-        pickle.dump(all_scalers, f)
-    print(f"Final scalers saved to {scaler_file_path}")
-
-    with open(nearby_stations_file_path, 'wb') as f:
-        pickle.dump(all_nearby_station_results, f)
-    print(f"Final nearby station results saved to {nearby_stations_file_path}")
-
-if __name__ == "__main__":
-    merge_models_and_scalers()
+# Save the combined models and scalers to a single file
+combined_file_path = get_absolute_path('../data/combined_models_and_scalers.pkl')
+with open(combined_file_path, 'wb') as f:
+    pickle.dump({'models': combined_models, 'scalers': combined_scalers}, f)
+    print(f"Combined models and scalers saved to {combined_file_path}")

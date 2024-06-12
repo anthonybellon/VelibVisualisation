@@ -18,6 +18,7 @@ def get_absolute_path(relative_path):
 
 # Directory containing the cleaned JSON files
 clean_data_directory = get_absolute_path('../data/historical_data_cleaned')
+model_save_directory = get_absolute_path('../data')
 
 # Load and concatenate JSON files
 print("Loading cleaned bike data...")
@@ -44,10 +45,22 @@ bike_data['date'] = pd.to_datetime(bike_data['duedate'])
 if bike_data['date'].dt.tz is None:
     bike_data['date'] = bike_data['date'].dt.tz_localize('UTC')
 
+# Update station coordinates
+station_coord_updates = {
+    "22504": {"lon": 2.253629, "lat": 48.905928},
+    "25006": {"lon": 2.1961666225454, "lat": 48.862453313908},
+    "10001": {"lon": 2.3600032, "lat": 48.8685433},
+    "10001_relais": {"lon": 2.3599605, "lat": 48.8687079}
+}
+
+# Apply coordinate updates
+for station, coords in station_coord_updates.items():
+    bike_data.loc[bike_data['stationcode'] == station, 'coordonnees_geo'] = bike_data.loc[bike_data['stationcode'] == station, 'coordonnees_geo'].apply(lambda x: coords if isinstance(x, dict) else x)
+
 # Extract latitude and longitude
 print("Extracting latitude and longitude...")
-bike_data['lat'] = bike_data['coordonnees_geo'].apply(lambda x: x.get('lat', np.nan) if x else np.nan)
-bike_data['lon'] = bike_data['coordonnees_geo'].apply(lambda x: x.get('lon', np.nan) if x else np.nan)
+bike_data['lat'] = bike_data['coordonnees_geo'].apply(lambda x: x.get('lat', np.nan) if isinstance(x, dict) else np.nan)
+bike_data['lon'] = bike_data['coordonnees_geo'].apply(lambda x: x.get('lon', np.nan) if isinstance(x, dict) else np.nan)
 
 # Handle missing values by filling or dropping
 bike_data.dropna(subset=['lat', 'lon'], inplace=True)
@@ -78,6 +91,36 @@ bike_data['normalized_docks_available'] = bike_data['numdocksavailable'] / bike_
 bike_data['usage_ratio'] = bike_data['numbikesavailable'] / (bike_data['capacity'] + 1e-5)
 bike_data['capacity_hour_interaction'] = bike_data['capacity'] * bike_data['hour']
 bike_data['capacity_day_interaction'] = bike_data['capacity'] * bike_data['day_of_week']
+
+# Function to handle infinite or excessively large values
+def handle_large_values(df, columns):
+    problematic_stations = []
+    for col in columns:
+        # Replace infinities with NaN
+        df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+        
+        # Round to 6 decimal places
+        df[col] = df[col].round(6)
+        
+        # Identify rows that still contain NaN after rounding
+        problematic = df[col].isna()
+        
+        if problematic.any():
+            problematic_stations.extend(df.loc[problematic, 'stationcode'].unique())
+            
+            # Fill remaining NaN with 0
+            df[col] = df[col].fillna(0)
+    
+    return df, problematic_stations
+
+# Handle and round large values
+numeric_columns = ['normalized_bikes_available', 'normalized_docks_available', 'usage_ratio',
+                   'capacity_hour_interaction', 'capacity_day_interaction',
+                   'rolling_mean_7_days', 'rolling_mean_30_days', 'lag_1_hour', 'lag_1_day']
+
+bike_data, problematic_stations = handle_large_values(bike_data, numeric_columns)
+if problematic_stations:
+    print(f"Stations with problematic values after handling: {problematic_stations}")
 
 print("Preprocessing complete.")
 
@@ -133,7 +176,7 @@ def calculate_nearby_station_status_adjustable(data, station, initial_radius=500
 print("Calculating nearby station status...")
 
 # Optional limit for the number of stations to process
-station_limit = 2  # Set to 1 for processing only the first station
+station_limit = None
 
 # Filter stations if a limit is specified
 stations = bike_data['stationcode'].unique()[:station_limit] if station_limit is not None else bike_data['stationcode'].unique()
@@ -162,6 +205,16 @@ with open(feature_names_file_path, 'w') as f:
     json.dump(base_features + additional_features, f)
 print(f"Feature names saved to {feature_names_file_path}")
 
+# Determine the last completed batch
+def get_last_completed_batch(directory):
+    model_files = [f for f in os.listdir(directory) if f.startswith('model_batch_') and f.endswith('.pkl')]
+    if not model_files:
+        return 0
+    batch_numbers = [int(f.split('_')[2].split('.')[0]) for f in model_files]
+    return max(batch_numbers)
+
+last_completed_batch = get_last_completed_batch(model_save_directory)
+
 # Normalize features
 print("Normalizing features...")
 scaler = StandardScaler()
@@ -169,7 +222,7 @@ scaler = StandardScaler()
 # Train a model for each station
 models = {}
 
-print(f"Found {len(stations)} unique stations. Training models...")
+print(f"Found {len(stations)} unique stations. Training models from batch {last_completed_batch + 1}...")
 
 # Hyperparameter space for RandomizedSearchCV
 param_dist = {
@@ -179,85 +232,101 @@ param_dist = {
     'min_samples_leaf': randint(1, 4)
 }
 
-# Process all stations
-for i, station in enumerate(tqdm(stations, desc="Training models", unit="station")):
-    actual_station_index = i  # To display the correct station index
-    nearby_stations, station_data = calculate_nearby_station_status_adjustable(bike_data, station)
+# Function to train and save model batches
+def train_and_save_batches(stations, batch_size=100, start_batch=0):
+    problematic_stations = []
+    
+    for batch_start in range(start_batch * batch_size, len(stations), batch_size):
+        batch_end = min(batch_start + batch_size, len(stations))
+        station_batch = stations[batch_start:batch_end]
+        batch_models = {}
+        batch_scaler = StandardScaler()
 
-    # If we have fewer than 5 nearby stations, we omit the additional features
-    if nearby_stations is None or len(nearby_stations) < 5:
-        print(f"Using base features for station {station} due to insufficient nearby stations. Prediction may be less than optimal.")
-        selected_features = base_features
-    else:
-        # Update station data with nearby station status
-        station_data = station_data.copy()
-        station_data['nearby_stations_closed'] = nearby_stations['is_renting'].apply(lambda x: 1 if x == 'NON' else 0).sum()
-        station_data['nearby_stations_full'] = (nearby_stations['numbikesavailable'] == 0).sum()
-        station_data['nearby_stations_empty'] = (nearby_stations['numdocksavailable'] == 0).sum()
+        for station in tqdm(station_batch, desc=f"Training batch {batch_start // batch_size + 1}", unit="station"):
+            nearby_stations, station_data = calculate_nearby_station_status_adjustable(bike_data, station)
 
-        # Calculate likelihoods
-        station_data['likelihood_fill'] = station_data['nearby_stations_full'] / (len(nearby_stations) + 1e-5)
-        station_data['likelihood_empty'] = station_data['nearby_stations_empty'] / (len(nearby_stations) + 1e-5)
+            if nearby_stations is None or len(nearby_stations) < 5:
+                print(f"Using base features for station {station} due to insufficient nearby stations. Prediction may be less than optimal.")
+                station_data = station_data.copy()
+                station_data['nearby_stations_closed'] = 0
+                station_data['nearby_stations_full'] = 0
+                station_data['nearby_stations_empty'] = 0
+                station_data['likelihood_fill'] = 0.0
+                station_data['likelihood_empty'] = 0.0
+            else:
+                # Update station data with nearby station status
+                station_data = station_data.copy()
+                station_data['nearby_stations_closed'] = nearby_stations['is_renting'].apply(lambda x: 1 if x == 'NON' else 0).sum()
+                station_data['nearby_stations_full'] = (nearby_stations['numbikesavailable'] == 0).sum()
+                station_data['nearby_stations_empty'] = (nearby_stations['numdocksavailable'] == 0).sum()
 
-        selected_features = base_features + additional_features
+                # Calculate likelihoods
+                station_data['likelihood_fill'] = station_data['nearby_stations_full'] / (len(nearby_stations) + 1e-5)
+                station_data['likelihood_empty'] = station_data['nearby_stations_empty'] / (len(nearby_stations) + 1e-5)
 
-    # Normalize the selected features
-    station_data[selected_features] = scaler.fit_transform(station_data[selected_features])
+                selected_features = base_features + additional_features
 
-    X = station_data[selected_features]
-    y = station_data[target]
+            # Normalize the selected features
+            station_data[selected_features] = batch_scaler.fit_transform(station_data[selected_features])
 
-    # Check the size of the data for the current station
-    print(f"Station {station} (Index {actual_station_index}) has {len(X)} samples.")
+            # Check for infinite or excessively large values
+            if np.isinf(station_data[selected_features]).values.any() or (np.abs(station_data[selected_features]) > np.finfo(np.float64).max).values.any():
+                print(f"Skipping station {station} due to infinite or excessively large values after rounding.")
+                problematic_stations.append(station)
+                continue
 
-    # Check if we have enough data to create a train/test split
-    if len(X) < 2:
-        print(f"Skipping station {station} (Index {actual_station_index}) due to insufficient data (less than 2 samples).")
-        continue
+            X = station_data[selected_features]
+            y = station_data[target]
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            # Check the size of the data for the current station
+            if len(X) < 2:
+                print(f"Skipping station {station} due to insufficient data (less than 2 samples).")
+                continue
 
-    # Check if we have enough data after splitting
-    if len(X_train) == 0 or len(X_test) == 0:
-        print(f"Skipping station {station} (Index {actual_station_index}) due to insufficient data after splitting.")
-        continue
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Dynamically adjust the number of splits
-    n_splits = min(5, len(X_train))
-    cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+            # Check if we have enough data after splitting
+            if len(X_train) == 0 or len(X_test) == 0:
+                print(f"Skipping station {station} due to insufficient data after splitting.")
+                continue
 
-    # Hyperparameter tuning using Randomized Search
-    random_search = RandomizedSearchCV(RandomForestRegressor(random_state=42), param_distributions=param_dist, n_iter=20, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
-    random_search.fit(X_train, y_train)
+            # Dynamically adjust the number of splits
+            n_splits = min(5, len(X_train))
+            cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    best_model = random_search.best_estimator_
+            # Hyperparameter tuning using Randomized Search
+            random_search = RandomizedSearchCV(RandomForestRegressor(random_state=42), param_distributions=param_dist, n_iter=20, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
+            random_search.fit(X_train, y_train)
 
-    # Cross-Validation score
-    cv_score = cross_val_score(best_model, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
-    print(f"Cross-Validation Score for station {station} (Index {actual_station_index}): {cv_score.mean()}")
+            best_model = random_search.best_estimator_
 
-    # Fit and evaluate the model
-    best_model.fit(X_train, y_train)
-    y_pred = best_model.predict(X_test)
-    mse = mean_squared_error(y_test, y_pred)
-    print(f"Mean Squared Error for station {station} (Index {actual_station_index}): {mse}")
+            # Cross-Validation score
+            cv_score = cross_val_score(best_model, X_train, y_train, cv=cv, scoring='neg_mean_squared_error')
+            print(f"Cross-Validation Score for station {station}: {cv_score.mean()}")
 
-    models[station] = best_model
+            # Fit and evaluate the model
+            best_model.fit(X_train, y_train)
+            y_pred = best_model.predict(X_test)
+            mse = mean_squared_error(y_test, y_pred)
+            print(f"Mean Squared Error for station {station}: {mse}")
 
-    # Print progress message for each station
-    print(f"Trained model for station {actual_station_index+1}/{len(stations)}: {station}")
-    print(f"Model score: {best_model.score(X_test, y_test)}")
+            batch_models[station] = best_model
 
-# Save models
-print("Saving scaler and models...")
-scaler_file_path = get_absolute_path('../data/scaler_final.pkl')
-with open(scaler_file_path, 'wb') as f:
-    pickle.dump(scaler, f)
-    print(f"Scaler saved to {scaler_file_path}")
+        # Save scaler and models for this batch
+        scaler_file_path = get_absolute_path(f'../data/scaler_batch_{batch_start // batch_size + 1}.pkl')
+        with open(scaler_file_path, 'wb') as f:
+            pickle.dump(batch_scaler, f)
+            print(f"Scaler for batch {batch_start // batch_size + 1} saved to {scaler_file_path}")
 
-model_file_path = get_absolute_path('../data/model_final.pkl')
-with open(model_file_path, 'wb') as f:
-    pickle.dump(models, f)
-    print(f"Models saved to {model_file_path}")
+        model_file_path = get_absolute_path(f'../data/model_batch_{batch_start // batch_size + 1}.pkl')
+        with open(model_file_path, 'wb') as f:
+            pickle.dump(batch_models, f)
+            print(f"Models for batch {batch_start // batch_size + 1} saved to {model_file_path}")
+    
+    if problematic_stations:
+        print(f"Problematic stations skipped due to large/infinite values: {problematic_stations}")
 
-print("Model training complete.")
+# Call the function to train and save models in batches, starting from the last completed batch
+train_and_save_batches(stations, batch_size=100, start_batch=last_completed_batch)
+
+print("Model training and saving complete.")

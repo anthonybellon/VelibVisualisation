@@ -26,6 +26,6 @@ def concat_json_files(file1, file2, output_file):
 if __name__ == "__main__":
     file1 = '../data/2024-05-to-concat.json'
     file2 = '../data/2021-04-to-concat.json'
-    output_file = '../data/concatenated_data.json'
+    output_file = '../data/use_for_predictions.json'
     
     concat_json_files(file1, file2, output_file)
