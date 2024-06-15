@@ -14,7 +14,7 @@ def get_absolute_path(relative_path):
 
 # Load the current data
 print("Loading current bike data...")
-current_data_path = get_absolute_path('../data/use_for_predictions.json')
+current_data_path = get_absolute_path('../data/organized_predictions.json')
 with open(current_data_path, 'r') as f:
     current_data = json.load(f)
 
