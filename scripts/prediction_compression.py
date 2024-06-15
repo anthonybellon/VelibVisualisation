@@ -57,8 +57,16 @@ def compute_percentage(data):
             station["predictions"][day] = [(round((hour / capacity) * 100) if capacity > 0 else 0) for hour in hours]
     return data
 
+def validate_file(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            data = json.load(file)
+            print(f"File '{file_path}' read successfully. Number of stations processed: {len(data)}")
+    else:
+        print(f"File '{file_path}' does not exist.")
+
 # Read data from compressed_predictions_final.json
-data_path = get_absolute_path('../data/prediction_results_final.json')
+data_path = get_absolute_path('../data/3_predictions_results.json')
 
 with open(data_path, 'r') as file:
     data = json.load(file)
@@ -100,8 +108,14 @@ rounded_data = round_predictions(processed_data)
 # Compute the percentage of fullness
 percentage_data = compute_percentage(rounded_data)
 
-# Save the processed and rounded data to processed_predictions.json
-with open('processed_predictions_percentage_test.json', 'w') as file:
+# Define the output path
+output_path = get_absolute_path('../data/4_compressed_predictions_final.json')
+
+# Save the processed and rounded data
+with open(output_path, 'w') as file:
     json.dump(percentage_data, file, indent=4)
 
-print("Data processing complete. Processed and rounded data saved to processed_predictions.json.")
+print(f"Data processing complete. Processed and rounded data saved to {output_path}.")
+
+# Validate the saved file
+validate_file(output_path)

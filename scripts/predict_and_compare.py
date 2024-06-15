@@ -8,13 +8,16 @@ from sklearn.preprocessing import StandardScaler
 from scipy.spatial import KDTree
 from collections import defaultdict
 
+# Optional limit for the number of stations to process
+station_limit = None
+
 # Function to get the absolute path relative to the script location
 def get_absolute_path(relative_path):
     return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
 # Load the current data
 print("Loading current bike data...")
-current_data_path = get_absolute_path('../data/organized_predictions.json')
+current_data_path = get_absolute_path('../data/2_organized_predictions.json')
 with open(current_data_path, 'r') as f:
     current_data = json.load(f)
 
@@ -117,9 +120,8 @@ def calculate_nearby_station_status(data, radius=500):
 print("Calculating nearby station status...")
 current_bike_data = calculate_nearby_station_status(current_bike_data)
 
-
+# Load models and scalers
 combined_file_path = get_absolute_path('../data/combined_models_and_scalers.pkl')
-
 with open(combined_file_path, 'rb') as f:
     combined_data = pickle.load(f)
     combined_models = combined_data['models']
@@ -135,12 +137,6 @@ else:
 stations_in_batch_15 = [station for station, details in combined_models.items() if details['scaler_idx'] == 15]
 print(f"Stations in batch 15: {stations_in_batch_15}")
 
-
-with open(combined_file_path, 'rb') as f:
-    combined_data = pickle.load(f)
-    models = combined_data['models']
-    scalers = combined_data['scalers']
-
 # Feature engineering: Add 'avg_bikes_hour_day'
 current_bike_data['avg_bikes_hour_day'] = current_bike_data.groupby(['stationcode', 'hour', 'day_of_week'])['numbikesavailable'].transform('mean')
 
@@ -152,8 +148,11 @@ additional_features = ['nearby_stations_closed', 'nearby_stations_full', 'nearby
                        'likelihood_fill', 'likelihood_empty']
 all_features = base_features + additional_features
 
-# Process a specific range of stations (835th to 844th)
-stations_to_test = list(models.keys())
+# Apply station limit
+if station_limit is not None:
+    stations_to_test = list(combined_models.keys())[:station_limit]
+else:
+    stations_to_test = list(combined_models.keys())
 
 # Make predictions
 print("Making predictions and comparing with actual values...")
@@ -166,19 +165,19 @@ print("Station codes in current data:", current_bike_data['stationcode'].unique(
 # Check for missing models and scalers
 missing_stations = []
 for station in stations_to_test:
-    if station not in models:
+    if station not in combined_models:
         missing_stations.append(station)
         print(f"Missing model for station {station}. Station data:")
         print(current_bike_data[current_bike_data['stationcode'] == station])
     else:
-        scaler_idx = models[station].get('scaler_idx')
-        if scaler_idx not in scalers:
+        scaler_idx = combined_models[station].get('scaler_idx')
+        if scaler_idx not in combined_scalers:
             print(f"Missing scaler for station {station} with scaler index {scaler_idx}.")
 
 print(f"Total missing stations: {len(missing_stations)}")
 
 for station in tqdm(stations_to_test, desc="Predicting for each station"):
-    if station not in models:
+    if station not in combined_models:
         continue
     
     station_data = current_bike_data[current_bike_data['stationcode'] == station].copy()  # Ensure it's a copy
@@ -187,14 +186,14 @@ for station in tqdm(stations_to_test, desc="Predicting for each station"):
         continue
     
     # Get the model and scaler for the current station
-    model = models[station]['model']
-    scaler_idx = models[station]['scaler_idx']
+    model = combined_models[station]['model']
+    scaler_idx = combined_models[station]['scaler_idx']
     
-    if scaler_idx not in scalers:
+    if scaler_idx not in combined_scalers:
         print(f"Missing scaler for station {station} with scaler index {scaler_idx}.")
         continue
     
-    scaler = scalers[scaler_idx]
+    scaler = combined_scalers[scaler_idx]
 
     # Determine which features were used during training for this station
     trained_features = model.feature_names_in_  # Get the feature names used during training
@@ -204,6 +203,8 @@ for station in tqdm(stations_to_test, desc="Predicting for each station"):
         if feature not in station_data.columns:
             station_data[feature] = 0
 
+    # Ensure the latest is_renting status is used
+    station_data['is_renting'] = current_bike_data[current_bike_data['stationcode'] == station]['is_renting'].values[0]
     X = station_data[trained_features]
     y_true = station_data['numbikesavailable']
 
@@ -238,30 +239,8 @@ results_df = results_df[['stationcode', 'name', 'is_installed', 'capacity', 'num
 results_json = results_df.to_dict(orient='records')
 
 # Save to a JSON file
-results_json_path = get_absolute_path('../data/prediction_results_final.json')
+results_json_path = get_absolute_path('../data/3_prediction_results.json')
 with open(results_json_path, 'w') as f:
     json.dump(results_json, f, indent=4)
 
 print(f"Predictions and comparisons saved to {results_json_path}")
-
-# Organize predictions by station, day, and hour
-print("Organizing predictions by station, day, and hour...")
-organized_predictions = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-for station in results_df['stationcode'].unique():
-    station_data = results_df[results_df['stationcode'] == station]
-    for index, row in station_data.iterrows():
-        day = row['day_of_week_unscaled']
-        hour = row['hour_unscaled']
-        organized_predictions[station][day][hour].append(row['predicted_bikesavailable'])
-
-# Convert to a normal dictionary before saving
-organized_predictions = {k: dict(v) for k, v in organized_predictions.items()}
-for k, v in organized_predictions.items():
-    organized_predictions[k] = {kk: dict(vv) for kk, vv in v.items()}
-
-# Save organized predictions to a JSON file
-organized_predictions_path = get_absolute_path('../data/compressed_predictions_final.json')
-with open(organized_predictions_path, 'w') as f:
-    json.dump(organized_predictions, f, indent=4)
-
-print(f"Organized predictions saved to {organized_predictions_path}")

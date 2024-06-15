@@ -8,8 +8,8 @@ def get_absolute_path(relative_path):
 
 # Directory containing the original JSON file
 data_directory = get_absolute_path('../data')
-input_file_path = os.path.join(data_directory, 'use_for_predictions.json')
-output_file_path = os.path.join(data_directory, 'organized_predictions.json')
+input_file_path = os.path.join(data_directory, '1_use_for_predictions.json')
+output_file_path = os.path.join(data_directory, '2_organized_predictions.json')
 
 # Load the data
 print("Loading bike data...")

@@ -1,44 +1,58 @@
 import requests
 import json
-import time
 import os
+import time
 from datetime import datetime
 
-API_URL = "https://opendata.paris.fr/api/explore/v2.1/catalog/datasets/velib-disponibilite-en-temps-reel/records"
-OUTPUT_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/doNotTouch/weekly_velib_data/weekly_velib_data.json'))
-DAILY_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/doNotTouch/daily_velib_data/daily'))
+JSON_URL = "https://opendata.paris.fr/explore/dataset/velib-disponibilite-en-temps-reel/download/?format=json&timezone=Europe/Berlin"
+OUTPUT_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data/do_not_touch/weekly_velib_data/weekly_velib_data.json'))
+DAILY_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data/do_not_touch/daily_velib_data/daily'))
+
+def get_absolute_path(relative_path):
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
+
+def transform_record(record):
+    if 'fields' in record:
+        fields = record['fields']
+        transformed = {
+            "stationcode": fields.get("stationcode"),
+            "name": fields.get("name"),
+            "is_installed": fields.get("is_installed"),
+            "capacity": fields.get("capacity"),
+            "numdocksavailable": fields.get("numdocksavailable"),
+            "numbikesavailable": fields.get("numbikesavailable"),
+            "mechanical": fields.get("mechanical"),
+            "ebike": fields.get("ebike"),
+            "is_renting": fields.get("is_renting"),
+            "is_returning": fields.get("is_returning"),
+            "duedate": fields.get("duedate"),
+            "coordonnees_geo": {
+                "lon": fields["coordonnees_geo"][1],
+                "lat": fields["coordonnees_geo"][0]
+            } if fields.get("coordonnees_geo") else None,
+            "nom_arrondissement_communes": fields.get("nom_arrondissement_communes"),
+            "code_insee_commune": None
+        }
+        return transformed
+    else:
+        return record
 
 def fetch_data():
-    all_stations_data = []
-    start = 0
-    limit = 100
-    total_stations = 1472
+    response = requests.get(JSON_URL)
+    
+    if response.status_code != 200:
+        print(f"Failed to fetch data: {response.status_code}")
+        print(response.text)
+        return
+    
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        print("Failed to decode JSON response")
+        print(response.text)
+        return
 
-    while start < total_stations:
-        response = requests.get(API_URL, params={"start": start, "limit": limit})
-        
-        if response.status_code != 200:
-            print(f"Failed to fetch data: {response.status_code}")
-            print(response.text)
-            break
-        
-        try:
-            data = response.json()
-            records = data.get('results', [])
-            if not records:
-                break
-            all_stations_data.extend(records)
-            start += limit
-            print(f"Fetched {len(records)} records. Total so far: {len(all_stations_data)}")
-            time.sleep(1)  # Respect API rate limit of 1 call per second
-        except json.JSONDecodeError:
-            print("Failed to decode JSON response")
-            print(response.text)
-            break
-        except KeyError:
-            print("Unexpected JSON structure")
-            print(data)
-            break
+    transformed_records = [transform_record(record) for record in data]
 
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
@@ -55,19 +69,19 @@ def fetch_data():
         existing_data = []
 
     # Append new data to existing data
-    combined_data = existing_data + all_stations_data
+    combined_data = existing_data + transformed_records
 
     # Debugging statement to show data before saving
     print(f"Total records after combining: {len(combined_data)}")
 
     # Write combined data to file
     with open(OUTPUT_FILE, 'w') as f:
-        json.dump(combined_data, f)
+        json.dump(combined_data, f, ensure_ascii=False, indent=4)
         print(f"Data saved to {OUTPUT_FILE}")
 
     # Split data by day of the week and save to separate files
     daily_data = {i: [] for i in range(7)}
-    for record in all_stations_data:
+    for record in transformed_records:
         duedate = record.get('duedate')
         if duedate:
             day_of_week = datetime.strptime(duedate, '%Y-%m-%dT%H:%M:%S%z').weekday()
@@ -87,7 +101,7 @@ def fetch_data():
         combined_daily_data = existing_daily_data + daily_data[day]
 
         with open(daily_file, 'w') as f:
-            json.dump(combined_daily_data, f)
+            json.dump(combined_daily_data, f, ensure_ascii=False, indent=4)
             print(f"Data for day {day} saved to {daily_file}")
 
 if __name__ == "__main__":
