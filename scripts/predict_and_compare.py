@@ -8,9 +8,6 @@ from sklearn.preprocessing import StandardScaler
 from scipy.spatial import KDTree
 from collections import defaultdict
 
-# Optional limit for the number of stations to process
-station_limit = None
-
 # Function to get the absolute path relative to the script location
 def get_absolute_path(relative_path):
     return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
@@ -66,6 +63,38 @@ current_bike_data['usage_ratio'] = current_bike_data['numbikesavailable'] / (cur
 current_bike_data['capacity_hour_interaction'] = current_bike_data['capacity'] * current_bike_data['hour']
 current_bike_data['capacity_day_interaction'] = current_bike_data['capacity'] * current_bike_data['day_of_week']
 
+# Function to handle infinite or excessively large values
+def handle_large_values(df, columns):
+    problematic_stations = []
+    for col in columns:
+        # Replace infinities with NaN
+        df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+        
+        # Round to 6 decimal places
+        df[col] = df[col].round(6)
+        
+        # Identify rows that still contain NaN after rounding
+        problematic = df[col].isna()
+        
+        if problematic.any():
+            problematic_stations.extend(df.loc[problematic, 'stationcode'].unique())
+            
+            # Fill remaining NaN with 0
+            df[col] = df[col].fillna(0)
+    
+    return df, problematic_stations
+
+# Handle and round large values
+numeric_columns = ['normalized_bikes_available', 'normalized_docks_available', 'usage_ratio',
+                   'capacity_hour_interaction', 'capacity_day_interaction',
+                   'rolling_mean_7_days', 'rolling_mean_30_days', 'lag_1_hour', 'lag_1_day']
+
+current_bike_data, problematic_stations = handle_large_values(current_bike_data, numeric_columns)
+if problematic_stations:
+    print(f"Stations with problematic values after handling: {problematic_stations}")
+
+print("Preprocessing complete.")
+
 # Function to calculate nearby station status with a limit
 def calculate_nearby_station_status(data, radius=500):
     data = data.copy()
@@ -120,8 +149,8 @@ def calculate_nearby_station_status(data, radius=500):
 print("Calculating nearby station status...")
 current_bike_data = calculate_nearby_station_status(current_bike_data)
 
-# Load models and scalers
-combined_file_path = get_absolute_path('../data/combined_models_and_scalers.pkl')
+combined_file_path = get_absolute_path('../data/14_june_pkl/combined_models_and_scalers.pkl')
+
 with open(combined_file_path, 'rb') as f:
     combined_data = pickle.load(f)
     combined_models = combined_data['models']
@@ -137,6 +166,11 @@ else:
 stations_in_batch_15 = [station for station, details in combined_models.items() if details['scaler_idx'] == 15]
 print(f"Stations in batch 15: {stations_in_batch_15}")
 
+with open(combined_file_path, 'rb') as f:
+    combined_data = pickle.load(f)
+    models = combined_data['models']
+    scalers = combined_data['scalers']
+
 # Feature engineering: Add 'avg_bikes_hour_day'
 current_bike_data['avg_bikes_hour_day'] = current_bike_data.groupby(['stationcode', 'hour', 'day_of_week'])['numbikesavailable'].transform('mean')
 
@@ -148,11 +182,8 @@ additional_features = ['nearby_stations_closed', 'nearby_stations_full', 'nearby
                        'likelihood_fill', 'likelihood_empty']
 all_features = base_features + additional_features
 
-# Apply station limit
-if station_limit is not None:
-    stations_to_test = list(combined_models.keys())[:station_limit]
-else:
-    stations_to_test = list(combined_models.keys())
+# Process a specific range of stations (835th to 844th)
+stations_to_test = list(models.keys())
 
 # Make predictions
 print("Making predictions and comparing with actual values...")
@@ -165,19 +196,19 @@ print("Station codes in current data:", current_bike_data['stationcode'].unique(
 # Check for missing models and scalers
 missing_stations = []
 for station in stations_to_test:
-    if station not in combined_models:
+    if station not in models:
         missing_stations.append(station)
         print(f"Missing model for station {station}. Station data:")
         print(current_bike_data[current_bike_data['stationcode'] == station])
     else:
-        scaler_idx = combined_models[station].get('scaler_idx')
-        if scaler_idx not in combined_scalers:
+        scaler_idx = models[station].get('scaler_idx')
+        if scaler_idx not in scalers:
             print(f"Missing scaler for station {station} with scaler index {scaler_idx}.")
 
 print(f"Total missing stations: {len(missing_stations)}")
 
 for station in tqdm(stations_to_test, desc="Predicting for each station"):
-    if station not in combined_models:
+    if station not in models:
         continue
     
     station_data = current_bike_data[current_bike_data['stationcode'] == station].copy()  # Ensure it's a copy
@@ -186,14 +217,14 @@ for station in tqdm(stations_to_test, desc="Predicting for each station"):
         continue
     
     # Get the model and scaler for the current station
-    model = combined_models[station]['model']
-    scaler_idx = combined_models[station]['scaler_idx']
+    model = models[station]['model']
+    scaler_idx = models[station]['scaler_idx']
     
-    if scaler_idx not in combined_scalers:
+    if scaler_idx not in scalers:
         print(f"Missing scaler for station {station} with scaler index {scaler_idx}.")
         continue
     
-    scaler = combined_scalers[scaler_idx]
+    scaler = scalers[scaler_idx]
 
     # Determine which features were used during training for this station
     trained_features = model.feature_names_in_  # Get the feature names used during training
@@ -203,8 +234,6 @@ for station in tqdm(stations_to_test, desc="Predicting for each station"):
         if feature not in station_data.columns:
             station_data[feature] = 0
 
-    # Ensure the latest is_renting status is used
-    station_data['is_renting'] = current_bike_data[current_bike_data['stationcode'] == station]['is_renting'].values[0]
     X = station_data[trained_features]
     y_true = station_data['numbikesavailable']
 
@@ -239,7 +268,7 @@ results_df = results_df[['stationcode', 'name', 'is_installed', 'capacity', 'num
 results_json = results_df.to_dict(orient='records')
 
 # Save to a JSON file
-results_json_path = get_absolute_path('../data/3_prediction_results.json')
+results_json_path = get_absolute_path('../data/prediction_results_final.json')
 with open(results_json_path, 'w') as f:
     json.dump(results_json, f, indent=4)
 

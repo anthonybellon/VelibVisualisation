@@ -19,8 +19,18 @@ with open(input_file_path, 'r') as f:
 # Convert to DataFrame
 bike_data = pd.DataFrame(data)
 
-# Convert 'duedate' to datetime
-bike_data['duedate'] = pd.to_datetime(bike_data['duedate'])
+# Convert 'duedate' to datetime with UTC
+print("Converting 'duedate' to datetime...")
+bike_data['duedate'] = pd.to_datetime(bike_data['duedate'], utc=True, errors='coerce')
+
+# Identify and report any rows with invalid 'duedate' values
+invalid_duedates = bike_data[bike_data['duedate'].isna()]
+if not invalid_duedates.empty:
+    print("Warning: The following rows have invalid 'duedate' values and will be dropped:")
+    print(invalid_duedates)
+
+# Drop rows with invalid 'duedate' values
+bike_data = bike_data.dropna(subset=['duedate'])
 
 # Extract additional time-related features
 bike_data['hour'] = bike_data['duedate'].dt.hour

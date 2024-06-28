@@ -1,6 +1,8 @@
 import json
 import os
 
+extra_capacity_stations = ["4005", "4104", "8002", "8004", "9104", "12105", "13123", "15056", "21302", "32012", "42004", "4010", "4017", "12010", "15058", "15122", "18043", "19018", "21021", "33019"]
+
 def calculate_trend(previous, next, position):
     return previous + (next - previous) * position
 
@@ -10,19 +12,16 @@ def get_absolute_path(relative_path):
 def process_data(data):
     processed_data = {}
     total_missing_predictions = 0
-    for day in range(7):  # There are 7 days in a week
-        hour_values = [None] * 24  # Initialize all hours with None
+    for day in range(7):
+        hour_values = [None] * 24
 
         for hour in range(24):
             hour_values[hour] = data.get(str(day), {}).get(str(hour), None)
-            # If there are multiple values, take the average
             if hour_values[hour] is not None and isinstance(hour_values[hour], list):
                 hour_values[hour] = sum(hour_values[hour]) / len(hour_values[hour])
         
-        # Count missing values before filling them
         total_missing_predictions += hour_values.count(None)
         
-        # Fill in missing values based on the trends of previous and next hours
         for i in range(24):
             if hour_values[i] is None:
                 prev_hour = next((j for j in range(i-1, -1, -1) if hour_values[j] is not None), None)
@@ -35,11 +34,9 @@ def process_data(data):
                 elif next_hour is not None:
                     hour_values[i] = hour_values[next_hour]
         
-        # If all hours for the day are missing, set default value
         if all(hour is None for hour in hour_values):
             hour_values = [0] * 24
 
-        # Store the processed values back into the dictionary
         processed_data[day] = hour_values
     
     return processed_data, total_missing_predictions
@@ -65,57 +62,85 @@ def validate_file(file_path):
     else:
         print(f"File '{file_path}' does not exist.")
 
-# Read data from compressed_predictions_final.json
-data_path = get_absolute_path('../data/3_predictions_results.json')
+data_path = get_absolute_path('../data/3_predictions_results_updated.json')
 
 with open(data_path, 'r') as file:
     data = json.load(file)
 
-# Transform the data into the required format
-processed_data = []
+processed_data_normal = []
+processed_data_extra = []
+
 for item in data:
     stationcode = item['stationcode']
-    station = next((s for s in processed_data if s["stationcode"] == stationcode), None)
-    if not station:
-        station = {
+    normal_capacity = item['capacity']
+    extra_capacity = item['capacity'] * 2 if stationcode in extra_capacity_stations else item['capacity']
+    
+    station_normal = next((s for s in processed_data_normal if s["stationcode"] == stationcode), None)
+    if not station_normal:
+        station_normal = {
             "stationcode": stationcode,
             "name": item["name"],
-            "capacity": item["capacity"],
+            "capacity": normal_capacity,
             "is_renting": item["is_renting"],
             "coordonnees_geo": item["coordonnees_geo"],
             "missing_predictions": 0,
             "predictions": {},
         }
-        processed_data.append(station)
+        processed_data_normal.append(station_normal)
+    
+    station_extra = next((s for s in processed_data_extra if s["stationcode"] == stationcode), None)
+    if not station_extra:
+        station_extra = {
+            "stationcode": stationcode,
+            "name": item["name"],
+            "capacity": extra_capacity,
+            "is_renting": item["is_renting"],
+            "coordonnees_geo": item["coordonnees_geo"],
+            "missing_predictions": 0,
+            "predictions": {},
+            "extra_capacity_predictions": {}
+        }
+        processed_data_extra.append(station_extra)
     
     day = item['day_of_week_unscaled']
     hour = item['hour_unscaled']
-    if str(day) not in station["predictions"]:
-        station["predictions"][str(day)] = {}
-    if str(hour) not in station["predictions"][str(day)]:
-        station["predictions"][str(day)][str(hour)] = []
+    if str(day) not in station_normal["predictions"]:
+        station_normal["predictions"][str(day)] = {}
+    if str(day) not in station_extra["predictions"]:
+        station_extra["predictions"][str(day)] = {}
+    if str(hour) not in station_normal["predictions"][str(day)]:
+        station_normal["predictions"][str(day)][str(hour)] = []
+    if str(hour) not in station_extra["predictions"][str(day)]:
+        station_extra["predictions"][str(day)][str(hour)] = []
 
-    station["predictions"][str(day)][str(hour)].append(item["predicted_bikesavailable"])
+    station_normal["predictions"][str(day)][str(hour)].append(item["predicted_bikesavailable"])
+    station_extra["predictions"][str(day)][str(hour)].append(item["predicted_bikesavailable"])
 
-# Process the data for each station
-for station in processed_data:
+for station in processed_data_normal:
     station['predictions'], missing_count = process_data(station['predictions'])
     station['missing_predictions'] = missing_count
 
-# Round the predictions to the nearest integer
-rounded_data = round_predictions(processed_data)
+for station in processed_data_extra:
+    station['predictions'], missing_count = process_data(station['predictions'])
+    station['missing_predictions'] = missing_count
+    station['extra_capacity_predictions'] = {k: v[:] for k, v in station['predictions'].items()}  # Copy predictions for extra capacity processing
 
-# Compute the percentage of fullness
-percentage_data = compute_percentage(rounded_data)
+rounded_data_normal = round_predictions(processed_data_normal)
+rounded_data_extra = round_predictions(processed_data_extra)
 
-# Define the output path
-output_path = get_absolute_path('../data/4_compressed_predictions_final.json')
+percentage_data_normal = compute_percentage(rounded_data_normal)
+percentage_data_extra = compute_percentage(rounded_data_extra)
 
-# Save the processed and rounded data
+output_data = {
+    "normal_capacity": percentage_data_normal,
+    "extra_capacity": percentage_data_extra
+}
+
+output_path = get_absolute_path('../data/4_compressed_predictions_final_fix.json')
+
 with open(output_path, 'w') as file:
-    json.dump(percentage_data, file, indent=4)
+    json.dump(output_data, file, indent=4)
 
 print(f"Data processing complete. Processed and rounded data saved to {output_path}.")
 
-# Validate the saved file
 validate_file(output_path)
