@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
 
 
 @pytest.fixture
@@ -52,8 +51,11 @@ def sample_bike_data():
 
 
 @pytest.fixture
-def sample_model_and_scaler():
-    """Create a sample model and scaler for testing."""
+def sample_model():
+    """Create a sample model for testing.
+
+    Note: RandomForest doesn't require scaling, so we train on raw features.
+    """
     # Create sample training data
     np.random.seed(42)
     n_samples = 100
@@ -68,15 +70,11 @@ def sample_model_and_scaler():
     )
     y = np.random.randint(0, 30, n_samples)
 
-    # Fit scaler
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # Train model
+    # Train model directly on raw features
     model = RandomForestRegressor(n_estimators=10, random_state=42)
-    model.fit(X_scaled, y)
+    model.fit(X, y)
 
-    return model, scaler
+    return model
 
 
 @pytest.fixture
@@ -99,17 +97,14 @@ def sample_json_file(temp_dir, sample_bike_data):
 
 
 @pytest.fixture
-def sample_model_file(temp_dir, sample_model_and_scaler):
-    """Create a sample pickle file with models and scalers."""
-    model, scaler = sample_model_and_scaler
+def sample_model_file(temp_dir, sample_model):
+    """Create a sample pickle file with models."""
+    model = sample_model
 
     combined_data = {
         "models": {
-            "10001": {"model": model, "scaler_idx": 1},
-            "10002": {"model": model, "scaler_idx": 1},
-        },
-        "scalers": {
-            1: scaler,
+            "10001": model,
+            "10002": model,
         },
     }
 

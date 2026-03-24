@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -36,9 +35,9 @@ class TestEndToEndSmoke:
         assert "lag_1_hour" in result.columns
         assert "normalized_bikes_available" in result.columns
 
-    def test_prediction_pipeline_smoke(self, sample_bike_data, sample_model_and_scaler):
+    def test_prediction_pipeline_smoke(self, sample_bike_data, sample_model):
         """Test that prediction pipeline runs without errors."""
-        model, scaler = sample_model_and_scaler
+        model = sample_model
 
         # Prepare data
         df = create_all_features(sample_bike_data, include_nearby_status=False, show_progress=False)
@@ -54,9 +53,8 @@ class TestEndToEndSmoke:
 
         X = df[features].fillna(0)
 
-        # Scale and predict
-        X_scaled = scaler.transform(X)
-        predictions = model.predict(X_scaled)
+        # Predict directly (no scaling needed for tree models)
+        predictions = model.predict(X)
 
         assert len(predictions) == len(X)
         assert not np.isnan(predictions).any()
@@ -82,15 +80,12 @@ class TestEndToEndSmoke:
         X = station_data[features].fillna(0)
         y = station_data["numbikesavailable"]
 
-        # Train
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-
+        # Train directly on raw features (no scaling needed)
         model = RandomForestRegressor(n_estimators=5, random_state=42)
-        model.fit(X_scaled, y)
+        model.fit(X, y)
 
         # Verify model works
-        predictions = model.predict(X_scaled)
+        predictions = model.predict(X)
         assert len(predictions) == len(y)
 
     def test_data_loading_smoke(self, sample_json_file):
@@ -110,17 +105,15 @@ class TestEndToEndSmoke:
             data = pickle.load(f)
 
         assert "models" in data
-        assert "scalers" in data
         assert len(data["models"]) > 0
-        assert len(data["scalers"]) > 0
 
 
 class TestDataIntegrity:
     """Tests for data integrity checks."""
 
-    def test_no_nan_in_predictions(self, sample_bike_data, sample_model_and_scaler):
+    def test_no_nan_in_predictions(self, sample_bike_data, sample_model):
         """Test that predictions don't contain NaN values."""
-        model, scaler = sample_model_and_scaler
+        model = sample_model
 
         df = create_all_features(sample_bike_data, include_nearby_status=False, show_progress=False)
 
@@ -130,8 +123,7 @@ class TestDataIntegrity:
                 df[feat] = 0
 
         X = df[features].fillna(0)
-        X_scaled = scaler.transform(X)
-        predictions = model.predict(X_scaled)
+        predictions = model.predict(X)
 
         assert not np.isnan(predictions).any()
         assert not np.isinf(predictions).any()

@@ -17,7 +17,6 @@ import pickle
 from pathlib import Path
 
 import pandas as pd
-from scipy.spatial import KDTree
 from tqdm import tqdm
 
 from config import (
@@ -30,6 +29,7 @@ from feature_engineering import (
     add_lag_features,
     add_rolling_features,
     add_temporal_features,
+    calculate_nearby_station_status,
     handle_large_values,
     preprocess_datetime,
 )
@@ -89,18 +89,17 @@ def load_current_data(input_path: Path) -> pd.DataFrame:
     return df
 
 
-def load_models(models_path: Path) -> tuple:
-    """Load combined models and scalers."""
+def load_models(models_path: Path) -> dict:
+    """Load combined models."""
     logger.info(f"Loading models from {models_path}")
 
     with open(models_path, "rb") as f:
         combined_data = pickle.load(f)
 
     models = combined_data["models"]
-    scalers = combined_data["scalers"]
 
-    logger.info(f"Loaded {len(models)} models and {len(scalers)} scalers")
-    return models, scalers
+    logger.info(f"Loaded {len(models)} models")
+    return models
 
 
 def preprocess_current_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -141,68 +140,12 @@ def preprocess_current_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def calculate_nearby_station_status(
-    df: pd.DataFrame, radius: int = 500, show_progress: bool = True
-) -> pd.DataFrame:
-    """Calculate nearby station status metrics."""
-    df = df.copy()
-    stations = df["stationcode"].unique()
+def make_predictions(df: pd.DataFrame, models: dict, show_progress: bool = True) -> pd.DataFrame:
+    """Make predictions for all stations.
 
-    coords = df[["lat", "lon"]].drop_duplicates().values
-    kd_tree = KDTree(coords)
-
-    df["nearby_stations_closed"] = 0
-    df["nearby_stations_full"] = 0
-    df["nearby_stations_empty"] = 0
-    df["likelihood_fill"] = 0.0
-    df["likelihood_empty"] = 0.0
-
-    iterator = tqdm(stations, desc="Calculating nearby status") if show_progress else stations
-
-    for station in iterator:
-        station_data = df[df["stationcode"] == station]
-        station_coords = station_data[["lat", "lon"]].iloc[0].values
-
-        indices = kd_tree.query_ball_point(station_coords, radius / 1000.0 / 111.32)
-        nearby_stations = df.iloc[indices]
-
-        for index, row in station_data.iterrows():
-            date_filtered = nearby_stations[nearby_stations["date"] == row["date"]]
-
-            nearby_closed = (
-                date_filtered["is_installed"].apply(lambda x: 1 if x == "NON" else 0).sum()
-            )
-            nearby_full = (date_filtered["numbikesavailable"] == date_filtered["capacity"]).sum()
-            nearby_empty = (date_filtered["numbikesavailable"] == 0).sum()
-
-            df.loc[index, "nearby_stations_closed"] = nearby_closed
-            df.loc[index, "nearby_stations_full"] = nearby_full
-            df.loc[index, "nearby_stations_empty"] = nearby_empty
-
-            total_nearby = len(date_filtered)
-            if total_nearby > 0:
-                likelihood_fill = nearby_full / total_nearby
-                likelihood_empty = nearby_empty / total_nearby
-            else:
-                likelihood_fill = 0.0
-                likelihood_empty = 0.0
-
-            df.loc[index, "likelihood_fill"] = likelihood_fill
-            df.loc[index, "likelihood_empty"] = likelihood_empty
-
-            if nearby_full > total_nearby / 2:
-                df.loc[index, "likelihood_fill"] *= 1.5
-            if nearby_empty > total_nearby / 2:
-                df.loc[index, "likelihood_empty"] *= 1.5
-
-    logger.info("Calculated nearby station status")
-    return df
-
-
-def make_predictions(
-    df: pd.DataFrame, models: dict, scalers: dict, show_progress: bool = True
-) -> pd.DataFrame:
-    """Make predictions for all stations."""
+    Note: RandomForest models don't require scaling - predictions use
+    raw feature values directly.
+    """
     # Add avg_bikes_hour_day feature
     df["avg_bikes_hour_day"] = df.groupby(["stationcode", "hour", "day_of_week"])[
         "numbikesavailable"
@@ -226,14 +169,7 @@ def make_predictions(
             logger.debug(f"No data for station {station}")
             continue
 
-        model = models[station]["model"]
-        scaler_idx = models[station]["scaler_idx"]
-
-        if scaler_idx not in scalers:
-            logger.warning(f"Missing scaler for station {station} (index {scaler_idx})")
-            continue
-
-        scaler = scalers[scaler_idx]
+        model = models[station]
 
         # Get features used during training
         trained_features = model.feature_names_in_
@@ -246,9 +182,8 @@ def make_predictions(
         X = station_data[trained_features]
         y_true = station_data["numbikesavailable"]
 
-        # Normalize and predict
-        X_scaled = pd.DataFrame(scaler.transform(X), columns=trained_features)
-        y_pred = model.predict(X_scaled)
+        # Predict directly (no scaling needed for tree models)
+        y_pred = model.predict(X)
 
         station_data.loc[:, "predicted_bikesavailable"] = y_pred
         station_data.loc[:, "actual_bikesavailable"] = y_true
@@ -320,15 +255,10 @@ def main():
     current_bike_data = calculate_nearby_station_status(current_bike_data)
 
     # Load models
-    models, scalers = load_models(args.models)
-
-    # Verify scalers
-    for batch_idx in {m["scaler_idx"] for m in models.values()}:
-        if batch_idx not in scalers:
-            logger.warning(f"Scaler for batch {batch_idx} is missing")
+    models = load_models(args.models)
 
     # Make predictions
-    results_df = make_predictions(current_bike_data, models, scalers)
+    results_df = make_predictions(current_bike_data, models)
 
     # Format output
     results_json = format_output(results_df, current_bike_data)

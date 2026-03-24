@@ -19,7 +19,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import randint
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import (
@@ -28,15 +27,16 @@ from sklearn.model_selection import (
     cross_val_score,
     train_test_split,
 )
-from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
 from config import (
     BATCH_SIZE,
     HISTORICAL_DATA_DIR,
     MODEL_SAVE_DIR,
+    N_ITER_SEARCH,
     N_SPLITS,
     RANDOM_STATE,
+    RF_PARAM_DISTRIBUTIONS,
     TEST_SIZE,
 )
 from feature_engineering import (
@@ -46,6 +46,7 @@ from feature_engineering import (
     add_temporal_features,
     apply_coordinate_updates,
     calculate_nearby_station_status_adjustable,
+    compute_nearby_features,
     extract_coordinates,
     handle_large_values,
     preprocess_datetime,
@@ -188,14 +189,6 @@ ADDITIONAL_FEATURES = [
 ]
 TARGET = "numbikesavailable"
 
-# Hyperparameter space for RandomizedSearchCV
-PARAM_DIST = {
-    "n_estimators": randint(50, 200),
-    "max_depth": [10, 20, None],
-    "min_samples_split": randint(2, 10),
-    "min_samples_leaf": randint(1, 4),
-}
-
 
 def get_last_completed_batch(directory: Path) -> int:
     """Determine the last completed batch number."""
@@ -219,15 +212,15 @@ def save_feature_names(output_dir: Path):
 def train_station_model(
     station_data: pd.DataFrame,
     features: list,
-    scaler: StandardScaler,
     station: str,
 ) -> tuple:
-    """Train a model for a single station."""
-    selected_features = features
+    """Train a model for a single station.
 
-    # Normalize features
+    Note: RandomForest doesn't require feature scaling as it uses
+    threshold-based splits that are invariant to monotonic transformations.
+    """
+    selected_features = features
     station_data = station_data.copy()
-    station_data[selected_features] = scaler.fit_transform(station_data[selected_features])
 
     # Check for problematic values
     if np.isinf(station_data[selected_features]).values.any():
@@ -249,19 +242,21 @@ def train_station_model(
         X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
     )
 
-    if len(X_train) == 0 or len(X_test) == 0:
-        logger.warning(f"Skipping station {station}: insufficient data after split")
+    if len(X_train) < 2 or len(X_test) == 0:
+        logger.warning(
+            f"Skipping station {station}: insufficient data after split (train={len(X_train)}, test={len(X_test)})"
+        )
         return None, None
 
-    # Dynamically adjust CV splits
-    n_splits = min(N_SPLITS, len(X_train))
+    # Dynamically adjust CV splits (minimum 2 required for KFold)
+    n_splits = max(2, min(N_SPLITS, len(X_train)))
     cv = KFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
 
     # Hyperparameter tuning
     random_search = RandomizedSearchCV(
         RandomForestRegressor(random_state=RANDOM_STATE),
-        param_distributions=PARAM_DIST,
-        n_iter=20,
+        param_distributions=RF_PARAM_DISTRIBUTIONS,
+        n_iter=N_ITER_SEARCH,
         cv=cv,
         scoring="neg_mean_squared_error",
         n_jobs=-1,
@@ -300,7 +295,6 @@ def train_and_save_batches(
         batch_end = min(batch_start + batch_size, len(stations))
         station_batch = stations[batch_start:batch_end]
         batch_models = {}
-        batch_scaler = StandardScaler()
 
         logger.info(f"Training batch {batch_num} ({len(station_batch)} stations)")
 
@@ -308,34 +302,33 @@ def train_and_save_batches(
             nearby_stations, station_data = calculate_nearby_station_status_adjustable(
                 bike_data, station
             )
+            station_data = station_data.copy()
 
-            if nearby_stations is None or len(nearby_stations) < 5:
-                logger.debug(f"Station {station}: using base features (insufficient nearby)")
-                station_data = station_data.copy()
-                station_data["nearby_stations_closed"] = 0
-                station_data["nearby_stations_full"] = 0
-                station_data["nearby_stations_empty"] = 0
-                station_data["likelihood_fill"] = 0.0
-                station_data["likelihood_empty"] = 0.0
+            # Initialize nearby feature columns
+            station_data["nearby_stations_closed"] = 0
+            station_data["nearby_stations_full"] = 0
+            station_data["nearby_stations_empty"] = 0
+            station_data["likelihood_fill"] = 0.0
+            station_data["likelihood_empty"] = 0.0
+
+            if nearby_stations is not None and len(nearby_stations) >= 5:
+                # Compute per-row nearby features to match inference parity
+                for idx, row in station_data.iterrows():
+                    date_filtered = nearby_stations[nearby_stations["date"] == row["date"]]
+                    features = compute_nearby_features(date_filtered)
+                    station_data.loc[idx, "nearby_stations_closed"] = features[
+                        "nearby_stations_closed"
+                    ]
+                    station_data.loc[idx, "nearby_stations_full"] = features["nearby_stations_full"]
+                    station_data.loc[idx, "nearby_stations_empty"] = features[
+                        "nearby_stations_empty"
+                    ]
+                    station_data.loc[idx, "likelihood_fill"] = features["likelihood_fill"]
+                    station_data.loc[idx, "likelihood_empty"] = features["likelihood_empty"]
             else:
-                station_data = station_data.copy()
-                station_data["nearby_stations_closed"] = (
-                    nearby_stations["is_renting"].apply(lambda x: 1 if x == "NON" else 0).sum()
-                )
-                station_data["nearby_stations_full"] = (
-                    nearby_stations["numbikesavailable"] == 0
-                ).sum()
-                station_data["nearby_stations_empty"] = (
-                    nearby_stations["numdocksavailable"] == 0
-                ).sum()
-                station_data["likelihood_fill"] = station_data["nearby_stations_full"] / (
-                    len(nearby_stations) + 1e-5
-                )
-                station_data["likelihood_empty"] = station_data["nearby_stations_empty"] / (
-                    len(nearby_stations) + 1e-5
-                )
+                logger.debug(f"Station {station}: using base features (insufficient nearby)")
 
-            model, mse = train_station_model(station_data, all_features, batch_scaler, station)
+            model, mse = train_station_model(station_data, all_features, station)
 
             if model is not None:
                 batch_models[station] = model
@@ -343,11 +336,6 @@ def train_and_save_batches(
                 problematic_stations.append(station)
 
         # Save batch
-        scaler_path = output_dir / f"scaler_batch_{batch_num}.pkl"
-        with open(scaler_path, "wb") as f:
-            pickle.dump(batch_scaler, f)
-        logger.info(f"Saved scaler to {scaler_path}")
-
         model_path = output_dir / f"model_batch_{batch_num}.pkl"
         with open(model_path, "wb") as f:
             pickle.dump(batch_models, f)

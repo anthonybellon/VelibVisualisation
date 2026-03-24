@@ -261,6 +261,50 @@ def report_data_quality(df: pd.DataFrame) -> dict:
     return report
 
 
+def compute_nearby_features(nearby_stations: pd.DataFrame) -> dict:
+    """
+    Compute nearby station features from a DataFrame of nearby stations.
+
+    This is the single source of truth for nearby feature definitions.
+    Use this function in both training and inference to ensure parity.
+
+    Definitions:
+    - nearby_stations_closed: Stations where is_installed == "NON"
+    - nearby_stations_full: Stations where numbikesavailable == capacity (all bikes docked)
+    - nearby_stations_empty: Stations where numbikesavailable == 0 (no bikes available)
+
+    Args:
+        nearby_stations: DataFrame of nearby stations for a specific timestamp.
+
+    Returns:
+        Dict with nearby feature values.
+    """
+    if nearby_stations.empty:
+        return {
+            "nearby_stations_closed": 0,
+            "nearby_stations_full": 0,
+            "nearby_stations_empty": 0,
+            "likelihood_fill": 0.0,
+            "likelihood_empty": 0.0,
+        }
+
+    nearby_closed = nearby_stations["is_installed"].apply(lambda x: 1 if x == "NON" else 0).sum()
+    nearby_full = (nearby_stations["numbikesavailable"] == nearby_stations["capacity"]).sum()
+    nearby_empty = (nearby_stations["numbikesavailable"] == 0).sum()
+
+    total_nearby = len(nearby_stations)
+    likelihood_fill = nearby_full / total_nearby if total_nearby > 0 else 0.0
+    likelihood_empty = nearby_empty / total_nearby if total_nearby > 0 else 0.0
+
+    return {
+        "nearby_stations_closed": nearby_closed,
+        "nearby_stations_full": nearby_full,
+        "nearby_stations_empty": nearby_empty,
+        "likelihood_fill": likelihood_fill,
+        "likelihood_empty": likelihood_empty,
+    }
+
+
 def calculate_nearby_station_status(
     df: pd.DataFrame, radius: int = NEARBY_STATION_INITIAL_RADIUS, show_progress: bool = True
 ) -> pd.DataFrame:
@@ -278,8 +322,15 @@ def calculate_nearby_station_status(
     df = df.copy()
     stations = df["stationcode"].unique()
 
-    coords = df[["lat", "lon"]].drop_duplicates().values
-    kd_tree = KDTree(coords)
+    # Build a single deduplicated table with both coordinates and station codes
+    # This ensures indices align correctly between KDTree and station lookup
+    station_coords_table = (
+        df[["stationcode", "lat", "lon"]]
+        .drop_duplicates(subset=["stationcode"])
+        .reset_index(drop=True)
+    )
+    coords_array = station_coords_table[["lat", "lon"]].values
+    kd_tree = KDTree(coords_array)
 
     # Initialize columns
     df["nearby_stations_closed"] = 0
@@ -298,37 +349,30 @@ def calculate_nearby_station_status(
 
         # Convert radius from meters to approximate degrees
         indices = kd_tree.query_ball_point(station_coords, radius / 1000.0 / 111.32)
-        nearby_stations = df.iloc[indices]
+
+        # Get nearby station codes from the aligned table
+        nearby_station_codes = [station_coords_table.iloc[i]["stationcode"] for i in indices]
+
+        # Filter original dataframe by nearby station codes
+        nearby_stations = df[df["stationcode"].isin(nearby_station_codes)]
 
         for index, row in station_data.iterrows():
             date_filtered = nearby_stations[nearby_stations["date"] == row["date"]]
 
-            nearby_closed = (
-                date_filtered["is_installed"].apply(lambda x: 1 if x == "NON" else 0).sum()
-            )
-            nearby_full = (date_filtered["numbikesavailable"] == date_filtered["capacity"]).sum()
-            nearby_empty = (date_filtered["numbikesavailable"] == 0).sum()
-
-            df.loc[index, "nearby_stations_closed"] = nearby_closed
-            df.loc[index, "nearby_stations_full"] = nearby_full
-            df.loc[index, "nearby_stations_empty"] = nearby_empty
-
-            total_nearby = len(date_filtered)
-            if total_nearby > 0:
-                likelihood_fill = nearby_full / total_nearby
-                likelihood_empty = nearby_empty / total_nearby
-            else:
-                likelihood_fill = 0.0
-                likelihood_empty = 0.0
-
-            df.loc[index, "likelihood_fill"] = likelihood_fill
-            df.loc[index, "likelihood_empty"] = likelihood_empty
+            features = compute_nearby_features(date_filtered)
+            df.loc[index, "nearby_stations_closed"] = features["nearby_stations_closed"]
+            df.loc[index, "nearby_stations_full"] = features["nearby_stations_full"]
+            df.loc[index, "nearby_stations_empty"] = features["nearby_stations_empty"]
+            df.loc[index, "likelihood_fill"] = features["likelihood_fill"]
+            df.loc[index, "likelihood_empty"] = features["likelihood_empty"]
 
             # Adjust likelihood based on nearby station statuses
-            if nearby_full > total_nearby / 2:
-                df.loc[index, "likelihood_fill"] *= 1.5
-            if nearby_empty > total_nearby / 2:
-                df.loc[index, "likelihood_empty"] *= 1.5
+            total_nearby = len(date_filtered)
+            if total_nearby > 0:
+                if features["nearby_stations_full"] > total_nearby / 2:
+                    df.loc[index, "likelihood_fill"] *= 1.5
+                if features["nearby_stations_empty"] > total_nearby / 2:
+                    df.loc[index, "likelihood_empty"] *= 1.5
 
     logger.info("Calculated nearby station status features")
     return df
@@ -363,9 +407,15 @@ def calculate_nearby_station_status_adjustable(
         logger.warning(f"No data found for station {station}")
         return None, station_data
 
-    unique_coords = df[["lat", "lon"]].drop_duplicates().values
-    station_codes = df[["stationcode"]].drop_duplicates().values.flatten()
-    kd_tree = KDTree(unique_coords)
+    # Build a single deduplicated table with both coordinates and station codes
+    # This ensures indices align correctly between KDTree and station lookup
+    station_coords_table = (
+        df[["stationcode", "lat", "lon"]]
+        .drop_duplicates(subset=["stationcode"])
+        .reset_index(drop=True)
+    )
+    coords_array = station_coords_table[["lat", "lon"]].values
+    kd_tree = KDTree(coords_array)
 
     station_coords = station_data[["lat", "lon"]].iloc[0].values
     target_station_code = station_data["stationcode"].iloc[0]
@@ -377,25 +427,30 @@ def calculate_nearby_station_status_adjustable(
         # Convert radius from meters to approximate degrees
         indices = kd_tree.query_ball_point(station_coords, radius / 1000.0 / 111.32)
 
-        # Filter out invalid indices
-        valid_indices = [i for i in indices if i < len(station_codes)]
+        # Get station codes from the same deduplicated table (indices are aligned)
+        nearby_station_codes = [
+            station_coords_table.iloc[i]["stationcode"]
+            for i in indices
+            if station_coords_table.iloc[i]["stationcode"] != target_station_code
+        ]
 
-        if len(valid_indices) != len(indices):
-            logger.debug(f"Filtered {len(indices) - len(valid_indices)} out-of-bounds indices")
-
-        # Exclude target station
-        nearby_indices = [i for i in valid_indices if station_codes[i] != target_station_code]
-
-        nearby_stations = df.iloc[nearby_indices]
+        # Filter original dataframe by nearby station codes
+        nearby_stations = df[df["stationcode"].isin(nearby_station_codes)]
         nearby_stations = nearby_stations[nearby_stations["is_installed"] != "NON"]
 
-        if len(nearby_stations) >= min_stations:
-            logger.debug(f"Found {len(nearby_stations)} nearby stations at radius {radius}m")
+        if len(nearby_stations["stationcode"].unique()) >= min_stations:
+            logger.debug(
+                f"Found {len(nearby_stations['stationcode'].unique())} "
+                f"nearby stations at radius {radius}m"
+            )
             return nearby_stations, station_data
 
         radius += increment
 
-    logger.debug(f"Only found {len(nearby_stations)} nearby stations at max radius")
+    logger.debug(
+        f"Only found {len(nearby_stations['stationcode'].unique())} "
+        f"nearby stations at max radius"
+    )
     return nearby_stations, station_data
 
 
