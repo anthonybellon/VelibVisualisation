@@ -1,19 +1,29 @@
-import requests
 import json
 import os
 import time
 from datetime import datetime
 
+import requests
+
 JSON_URL = "https://opendata.paris.fr/explore/dataset/velib-disponibilite-en-temps-reel/download/?format=json&timezone=Europe/Berlin"
-OUTPUT_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data/do_not_touch/weekly_velib_data/weekly_velib_data.json'))
-DAILY_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data/do_not_touch/daily_velib_data/daily'))
+OUTPUT_FILE = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "../../data/do_not_touch/weekly_velib_data/weekly_velib_data.json",
+    )
+)
+DAILY_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../data/do_not_touch/daily_velib_data/daily")
+)
+
 
 def get_absolute_path(relative_path):
     return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
+
 def transform_record(record):
-    if 'fields' in record:
-        fields = record['fields']
+    if "fields" in record:
+        fields = record["fields"]
         transformed = {
             "stationcode": fields.get("stationcode"),
             "name": fields.get("name"),
@@ -28,23 +38,26 @@ def transform_record(record):
             "duedate": fields.get("duedate"),
             "coordonnees_geo": {
                 "lon": fields["coordonnees_geo"][1],
-                "lat": fields["coordonnees_geo"][0]
-            } if fields.get("coordonnees_geo") else None,
+                "lat": fields["coordonnees_geo"][0],
+            }
+            if fields.get("coordonnees_geo")
+            else None,
             "nom_arrondissement_communes": fields.get("nom_arrondissement_communes"),
-            "code_insee_commune": None
+            "code_insee_commune": None,
         }
         return transformed
     else:
         return record
 
+
 def fetch_data():
     response = requests.get(JSON_URL)
-    
+
     if response.status_code != 200:
         print(f"Failed to fetch data: {response.status_code}")
         print(response.text)
         return
-    
+
     try:
         data = response.json()
     except json.JSONDecodeError:
@@ -60,7 +73,7 @@ def fetch_data():
 
     # Read existing data
     if os.path.exists(OUTPUT_FILE):
-        with open(OUTPUT_FILE, 'r') as f:
+        with open(OUTPUT_FILE) as f:
             try:
                 existing_data = json.load(f)
             except json.JSONDecodeError:
@@ -75,22 +88,22 @@ def fetch_data():
     print(f"Total records after combining: {len(combined_data)}")
 
     # Write combined data to file
-    with open(OUTPUT_FILE, 'w') as f:
+    with open(OUTPUT_FILE, "w") as f:
         json.dump(combined_data, f, ensure_ascii=False, indent=4)
         print(f"Data saved to {OUTPUT_FILE}")
 
     # Split data by day of the week and save to separate files
     daily_data = {i: [] for i in range(7)}
     for record in transformed_records:
-        duedate = record.get('duedate')
+        duedate = record.get("duedate")
         if duedate:
-            day_of_week = datetime.strptime(duedate, '%Y-%m-%dT%H:%M:%S%z').weekday()
+            day_of_week = datetime.strptime(duedate, "%Y-%m-%dT%H:%M:%S%z").weekday()
             daily_data[day_of_week].append(record)
 
     for day in range(7):
-        daily_file = os.path.join(DAILY_DIR, f'day_{day}.json')
+        daily_file = os.path.join(DAILY_DIR, f"day_{day}.json")
         if os.path.exists(daily_file):
-            with open(daily_file, 'r') as f:
+            with open(daily_file) as f:
                 try:
                     existing_daily_data = json.load(f)
                 except json.JSONDecodeError:
@@ -100,9 +113,10 @@ def fetch_data():
 
         combined_daily_data = existing_daily_data + daily_data[day]
 
-        with open(daily_file, 'w') as f:
+        with open(daily_file, "w") as f:
             json.dump(combined_daily_data, f, ensure_ascii=False, indent=4)
             print(f"Data for day {day} saved to {daily_file}")
+
 
 if __name__ == "__main__":
     while True:

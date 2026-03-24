@@ -1,6 +1,18 @@
+# Core dependencies
 pandas
 scikit-learn
 tqdm
 geopy
 numpy
 scipy
+
+# Development dependencies
+pytest
+pytest-cov
+ruff
+black
+pre-commit
+
+# Optional type checking
+# mypy
+# pandas-stubs

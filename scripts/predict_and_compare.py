@@ -1,275 +1,274 @@
-import pandas as pd
-import numpy as np
-import os
-import pickle
-from tqdm import tqdm
+"""Make predictions and compare with actual values.
+
+Usage:
+    python predict_and_compare.py [OPTIONS]
+
+Options:
+    --input PATH          Input data file (JSON)
+    --models PATH         Combined models file (pickle)
+    --output PATH         Output predictions file (JSON)
+    --verbose, -v         Enable verbose logging
+    --quiet, -q           Suppress info logging
+"""
+
+import argparse
 import json
-from sklearn.preprocessing import StandardScaler
-from scipy.spatial import KDTree
-from collections import defaultdict
+import pickle
+from pathlib import Path
 
-# Function to get the absolute path relative to the script location
-def get_absolute_path(relative_path):
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
+import pandas as pd
+from tqdm import tqdm
 
-# Load the current data
-print("Loading current bike data...")
-current_data_path = get_absolute_path('../data/2_organized_predictions.json')
-with open(current_data_path, 'r') as f:
-    current_data = json.load(f)
+from config import (
+    COMBINED_MODELS_PATH,
+    DATA_DIR,
+    PREDICTIONS_INPUT_PATH,
+)
+from feature_engineering import (
+    add_capacity_features,
+    add_lag_features,
+    add_rolling_features,
+    add_temporal_features,
+    calculate_nearby_station_status,
+    handle_large_values,
+    preprocess_datetime,
+)
+from logging_config import get_logger, init_cli_logging
 
-# Convert to DataFrame
-current_bike_data = pd.DataFrame(current_data)
+logger = get_logger(__name__)
 
-# Preprocess current data
-print("Preprocessing current bike data...")
-current_bike_data['date'] = pd.to_datetime(current_bike_data['duedate'])
 
-# Ensure 'date' column is timezone-aware (localize to UTC if needed)
-if current_bike_data['date'].dt.tz is None:
-    current_bike_data['date'] = current_bike_data['date'].dt.tz_localize('UTC')
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Make predictions and compare with actual values",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=PREDICTIONS_INPUT_PATH,
+        help="Input data file (JSON)",
+    )
+    parser.add_argument(
+        "--models",
+        type=Path,
+        default=COMBINED_MODELS_PATH,
+        help="Combined models file (pickle)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DATA_DIR / "prediction_results_final.json",
+        help="Output predictions file (JSON)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress info logging",
+    )
+    return parser.parse_args()
 
-# Extract latitude and longitude
-coords = pd.json_normalize(current_bike_data['coordonnees_geo'])
-current_bike_data['lat'] = coords['lat']
-current_bike_data['lon'] = coords['lon']
 
-# Remove any NaN values
-current_bike_data.fillna(0, inplace=True)
+def load_current_data(input_path: Path) -> pd.DataFrame:
+    """Load current bike data from JSON file."""
+    logger.info(f"Loading data from {input_path}")
 
-# Feature engineering: Add hour and day_of_week
-current_bike_data['hour'] = current_bike_data['date'].dt.hour
-current_bike_data['day_of_week'] = current_bike_data['date'].dt.dayofweek
+    with open(input_path) as f:
+        data = json.load(f)
 
-# Adding human-readable hour and day_of_week columns
-current_bike_data['hour_unscaled'] = current_bike_data['date'].dt.hour
-current_bike_data['day_of_week_unscaled'] = current_bike_data['date'].dt.dayofweek
+    df = pd.DataFrame(data)
+    logger.info(f"Loaded {len(df)} records")
+    return df
 
-# Adding lag features
-print("Adding lag features...")
-current_bike_data = current_bike_data.sort_values(by=['stationcode', 'date'])
-current_bike_data['lag_1_hour'] = current_bike_data.groupby('stationcode')['numbikesavailable'].shift(1)
-current_bike_data['lag_1_day'] = current_bike_data.groupby('stationcode')['numbikesavailable'].shift(24)
 
-# Adding trend features
-print("Adding trend features...")
-current_bike_data['rolling_mean_7_days'] = current_bike_data.groupby('stationcode')['numbikesavailable'].transform(lambda x: x.rolling(window=7*24, min_periods=1).mean())
-current_bike_data['rolling_mean_30_days'] = current_bike_data.groupby('stationcode')['numbikesavailable'].transform(lambda x: x.rolling(window=30*24, min_periods=1).mean())
+def load_models(models_path: Path) -> dict:
+    """Load combined models."""
+    logger.info(f"Loading models from {models_path}")
 
-# Adding new features as in train_model.py
-current_bike_data['normalized_bikes_available'] = current_bike_data['numbikesavailable'] / current_bike_data['capacity']
-current_bike_data['normalized_docks_available'] = current_bike_data['numdocksavailable'] / current_bike_data['capacity']
-current_bike_data['usage_ratio'] = current_bike_data['numbikesavailable'] / (current_bike_data['capacity'] + 1e-5)
-current_bike_data['capacity_hour_interaction'] = current_bike_data['capacity'] * current_bike_data['hour']
-current_bike_data['capacity_day_interaction'] = current_bike_data['capacity'] * current_bike_data['day_of_week']
+    with open(models_path, "rb") as f:
+        combined_data = pickle.load(f)
 
-# Function to handle infinite or excessively large values
-def handle_large_values(df, columns):
-    problematic_stations = []
-    for col in columns:
-        # Replace infinities with NaN
-        df[col] = df[col].replace([np.inf, -np.inf], np.nan)
-        
-        # Round to 6 decimal places
-        df[col] = df[col].round(6)
-        
-        # Identify rows that still contain NaN after rounding
-        problematic = df[col].isna()
-        
-        if problematic.any():
-            problematic_stations.extend(df.loc[problematic, 'stationcode'].unique())
-            
-            # Fill remaining NaN with 0
-            df[col] = df[col].fillna(0)
-    
-    return df, problematic_stations
+    models = combined_data["models"]
 
-# Handle and round large values
-numeric_columns = ['normalized_bikes_available', 'normalized_docks_available', 'usage_ratio',
-                   'capacity_hour_interaction', 'capacity_day_interaction',
-                   'rolling_mean_7_days', 'rolling_mean_30_days', 'lag_1_hour', 'lag_1_day']
+    logger.info(f"Loaded {len(models)} models")
+    return models
 
-current_bike_data, problematic_stations = handle_large_values(current_bike_data, numeric_columns)
-if problematic_stations:
-    print(f"Stations with problematic values after handling: {problematic_stations}")
 
-print("Preprocessing complete.")
+def preprocess_current_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Preprocess current bike data for prediction."""
+    logger.info("Preprocessing data...")
 
-# Function to calculate nearby station status with a limit
-def calculate_nearby_station_status(data, radius=500):
-    data = data.copy()
-    stations = data['stationcode'].unique()
+    # Datetime preprocessing
+    df = preprocess_datetime(df)
 
-    coords = data[['lat', 'lon']].drop_duplicates().values
-    kd_tree = KDTree(coords)
+    # Extract coordinates
+    coords = pd.json_normalize(df["coordonnees_geo"])
+    df["lat"] = coords["lat"]
+    df["lon"] = coords["lon"]
 
-    data['nearby_stations_closed'] = 0
-    data['nearby_stations_full'] = 0
-    data['nearby_stations_empty'] = 0
-    data['likelihood_fill'] = 0.0
-    data['likelihood_empty'] = 0.0
+    # Fill NaN values
+    df = df.fillna(0)
 
-    for station in tqdm(stations, desc="Calculating nearby station status"):
-        station_data = data[data['stationcode'] == station]
-        station_coords = station_data[['lat', 'lon']].iloc[0].values
+    # Add temporal features
+    df = add_temporal_features(df)
 
-        indices = kd_tree.query_ball_point(station_coords, radius / 1000.0)
-        nearby_stations = data.iloc[indices]
+    # Keep unscaled versions for output
+    df["hour_unscaled"] = df["date"].dt.hour
+    df["day_of_week_unscaled"] = df["date"].dt.dayofweek
 
-        for index, row in station_data.iterrows():
-            date_filtered_nearby_stations = nearby_stations[nearby_stations['date'] == row['date']]
-            nearby_stations_closed = date_filtered_nearby_stations['is_installed'].apply(lambda x: 1 if x == "NON" else 0).sum()
-            nearby_stations_full = (date_filtered_nearby_stations['numbikesavailable'] == date_filtered_nearby_stations['capacity']).sum()
-            nearby_stations_empty = (date_filtered_nearby_stations['numbikesavailable'] == 0).sum()
+    # Add lag and rolling features
+    df = add_lag_features(df)
+    df = add_rolling_features(df)
 
-            data.loc[index, 'nearby_stations_closed'] = nearby_stations_closed
-            data.loc[index, 'nearby_stations_full'] = nearby_stations_full
-            data.loc[index, 'nearby_stations_empty'] = nearby_stations_empty
+    # Add capacity features
+    df = add_capacity_features(df)
 
-            total_nearby_stations = len(date_filtered_nearby_stations)
-            if total_nearby_stations > 0:
-                likelihood_fill = nearby_stations_full / total_nearby_stations
-                likelihood_empty = nearby_stations_empty / total_nearby_stations
-            else:
-                likelihood_fill = 0.0
-                likelihood_empty = 0.0
+    # Handle large values
+    df, problematic_stations = handle_large_values(df)
+    if problematic_stations:
+        logger.warning(f"Stations with problematic values: {problematic_stations}")
 
-            data.loc[index, 'likelihood_fill'] = likelihood_fill
-            data.loc[index, 'likelihood_empty'] = likelihood_empty
+    logger.info("Preprocessing complete")
+    return df
 
-            # Adjust likelihood based on nearby station statuses
-            if nearby_stations_full > total_nearby_stations / 2:
-                data.loc[index, 'likelihood_fill'] *= 1.5  # Increase likelihood of filling up
-            if nearby_stations_empty > total_nearby_stations / 2:
-                data.loc[index, 'likelihood_empty'] *= 1.5  # Increase likelihood of emptying
 
-    return data
+def make_predictions(df: pd.DataFrame, models: dict, show_progress: bool = True) -> pd.DataFrame:
+    """Make predictions for all stations.
 
-# Apply the function to the current bike data for specific range
-print("Calculating nearby station status...")
-current_bike_data = calculate_nearby_station_status(current_bike_data)
+    Note: RandomForest models don't require scaling - predictions use
+    raw feature values directly.
+    """
+    # Add avg_bikes_hour_day feature
+    df["avg_bikes_hour_day"] = df.groupby(["stationcode", "hour", "day_of_week"])[
+        "numbikesavailable"
+    ].transform("mean")
 
-combined_file_path = get_absolute_path('../data/14_june_pkl/combined_models_and_scalers.pkl')
+    stations_to_test = list(models.keys())
+    results = []
+    missing_stations = []
 
-with open(combined_file_path, 'rb') as f:
-    combined_data = pickle.load(f)
-    combined_models = combined_data['models']
-    combined_scalers = combined_data['scalers']
+    logger.info(f"Making predictions for {len(stations_to_test)} stations")
 
-# Verify if scaler for batch 15 is present
-if 15 in combined_scalers:
-    print("Scaler for batch 15 is present.")
-else:
-    print("Scaler for batch 15 is missing.")
+    iterator = tqdm(stations_to_test, desc="Predicting") if show_progress else stations_to_test
 
-# Optionally, verify the stations in batch 15
-stations_in_batch_15 = [station for station, details in combined_models.items() if details['scaler_idx'] == 15]
-print(f"Stations in batch 15: {stations_in_batch_15}")
+    for station in iterator:
+        if station not in models:
+            missing_stations.append(station)
+            continue
 
-with open(combined_file_path, 'rb') as f:
-    combined_data = pickle.load(f)
-    models = combined_data['models']
-    scalers = combined_data['scalers']
+        station_data = df[df["stationcode"] == station].copy()
+        if station_data.empty:
+            logger.debug(f"No data for station {station}")
+            continue
 
-# Feature engineering: Add 'avg_bikes_hour_day'
-current_bike_data['avg_bikes_hour_day'] = current_bike_data.groupby(['stationcode', 'hour', 'day_of_week'])['numbikesavailable'].transform('mean')
+        model = models[station]
 
-# Select features, including the unscaled versions for readability
-base_features = ['hour', 'day_of_week', 'avg_bikes_hour_day', 'lag_1_hour', 'lag_1_day', 
-                 'rolling_mean_7_days', 'rolling_mean_30_days', 'normalized_bikes_available', 
-                 'normalized_docks_available', 'usage_ratio', 'capacity_hour_interaction', 'capacity_day_interaction']
-additional_features = ['nearby_stations_closed', 'nearby_stations_full', 'nearby_stations_empty', 
-                       'likelihood_fill', 'likelihood_empty']
-all_features = base_features + additional_features
+        # Get features used during training
+        trained_features = model.feature_names_in_
 
-# Process a specific range of stations (835th to 844th)
-stations_to_test = list(models.keys())
+        # Ensure all features exist
+        for feature in trained_features:
+            if feature not in station_data.columns:
+                station_data[feature] = 0
 
-# Make predictions
-print("Making predictions and comparing with actual values...")
-results = []
+        X = station_data[trained_features]
+        y_true = station_data["numbikesavailable"]
 
-# Debugging: Print the station codes in the model and current bike data
-print("Station codes in models:", stations_to_test)
-print("Station codes in current data:", current_bike_data['stationcode'].unique())
+        # Predict directly (no scaling needed for tree models)
+        y_pred = model.predict(X)
 
-# Check for missing models and scalers
-missing_stations = []
-for station in stations_to_test:
-    if station not in models:
-        missing_stations.append(station)
-        print(f"Missing model for station {station}. Station data:")
-        print(current_bike_data[current_bike_data['stationcode'] == station])
-    else:
-        scaler_idx = models[station].get('scaler_idx')
-        if scaler_idx not in scalers:
-            print(f"Missing scaler for station {station} with scaler index {scaler_idx}.")
+        station_data.loc[:, "predicted_bikesavailable"] = y_pred
+        station_data.loc[:, "actual_bikesavailable"] = y_true
+        results.append(station_data)
 
-print(f"Total missing stations: {len(missing_stations)}")
+    if missing_stations:
+        logger.warning(f"Missing models for {len(missing_stations)} stations")
 
-for station in tqdm(stations_to_test, desc="Predicting for each station"):
-    if station not in models:
-        continue
-    
-    station_data = current_bike_data[current_bike_data['stationcode'] == station].copy()  # Ensure it's a copy
-    if station_data.empty:
-        print(f"No data for station {station}")
-        continue
-    
-    # Get the model and scaler for the current station
-    model = models[station]['model']
-    scaler_idx = models[station]['scaler_idx']
-    
-    if scaler_idx not in scalers:
-        print(f"Missing scaler for station {station} with scaler index {scaler_idx}.")
-        continue
-    
-    scaler = scalers[scaler_idx]
+    if not results:
+        raise ValueError("No predictions were made")
 
-    # Determine which features were used during training for this station
-    trained_features = model.feature_names_in_  # Get the feature names used during training
-    
-    # Ensure that the prediction DataFrame has the same features as the training DataFrame
-    for feature in trained_features:
-        if feature not in station_data.columns:
-            station_data[feature] = 0
-
-    X = station_data[trained_features]
-    y_true = station_data['numbikesavailable']
-
-    # Normalize the features
-    X_scaled = pd.DataFrame(scaler.transform(X), columns=trained_features)
-    
-    # Predict
-    y_pred = model.predict(X_scaled)
-    
-    station_data.loc[:, 'predicted_bikesavailable'] = y_pred
-    station_data.loc[:, 'actual_bikesavailable'] = y_true
-    results.append(station_data)
-
-# Ensure results is not empty before concatenating
-if results:
-    # Concatenate results
     results_df = pd.concat(results)
-else:
-    raise ValueError("No predictions were made, please check your data and models.")
+    logger.info(f"Made predictions for {len(results)} stations")
 
-# Drop unnecessary columns to avoid duplication
-results_df = results_df.drop(columns=['date', 'lat', 'lon'])
+    return results_df
 
-# Add unscaled values to the final JSON output
-results_df['hour_unscaled'] = current_bike_data['hour_unscaled']
-results_df['day_of_week_unscaled'] = current_bike_data['day_of_week_unscaled']
 
-# Filter to include only necessary columns
-results_df = results_df[['stationcode', 'name', 'is_installed', 'capacity', 'numdocksavailable', 'numbikesavailable', 'mechanical', 'ebike', 'is_renting', 'is_returning', 'coordonnees_geo','predicted_bikesavailable', 'actual_bikesavailable', 'hour_unscaled', 'day_of_week_unscaled']]
+def format_output(df: pd.DataFrame, original_df: pd.DataFrame) -> list:
+    """Format prediction results for output."""
+    df = df.drop(columns=["date", "lat", "lon"], errors="ignore")
 
-# Convert to JSON format
-results_json = results_df.to_dict(orient='records')
+    # Add unscaled values
+    df["hour_unscaled"] = original_df["hour_unscaled"]
+    df["day_of_week_unscaled"] = original_df["day_of_week_unscaled"]
 
-# Save to a JSON file
-results_json_path = get_absolute_path('../data/prediction_results_final.json')
-with open(results_json_path, 'w') as f:
-    json.dump(results_json, f, indent=4)
+    # Select output columns
+    output_columns = [
+        "stationcode",
+        "name",
+        "is_installed",
+        "capacity",
+        "numdocksavailable",
+        "numbikesavailable",
+        "mechanical",
+        "ebike",
+        "is_renting",
+        "is_returning",
+        "coordonnees_geo",
+        "predicted_bikesavailable",
+        "actual_bikesavailable",
+        "hour_unscaled",
+        "day_of_week_unscaled",
+    ]
 
-print(f"Predictions and comparisons saved to {results_json_path}")
+    # Filter to available columns
+    available_columns = [c for c in output_columns if c in df.columns]
+    df = df[available_columns]
+
+    return df.to_dict(orient="records")
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+
+    # Initialize logging
+    init_cli_logging(verbose=args.verbose, quiet=args.quiet)
+
+    logger.info("Starting prediction pipeline")
+
+    # Load data
+    current_bike_data = load_current_data(args.input)
+
+    # Preprocess
+    current_bike_data = preprocess_current_data(current_bike_data)
+
+    # Calculate nearby station status
+    logger.info("Calculating nearby station status...")
+    current_bike_data = calculate_nearby_station_status(current_bike_data)
+
+    # Load models
+    models = load_models(args.models)
+
+    # Make predictions
+    results_df = make_predictions(current_bike_data, models)
+
+    # Format output
+    results_json = format_output(results_df, current_bike_data)
+
+    # Save results
+    with open(args.output, "w") as f:
+        json.dump(results_json, f, indent=4)
+
+    logger.info(f"Predictions saved to {args.output}")
+
+
+if __name__ == "__main__":
+    main()

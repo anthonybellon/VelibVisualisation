@@ -1,16 +1,23 @@
-import os
 import json
+import os
+
 
 def get_absolute_path(relative_path):
     return os.path.abspath(os.path.join(os.path.dirname(__file__), relative_path))
 
+
 def remove_keys(data, keys_to_remove):
     if isinstance(data, dict):
-        return {key: remove_keys(value, keys_to_remove) for key, value in data.items() if key not in keys_to_remove}
+        return {
+            key: remove_keys(value, keys_to_remove)
+            for key, value in data.items()
+            if key not in keys_to_remove
+        }
     elif isinstance(data, list):
         return [remove_keys(item, keys_to_remove) for item in data]
     else:
         return data
+
 
 def simplify_predictions(predictions_data):
     simplified_predictions = {}
@@ -24,6 +31,7 @@ def simplify_predictions(predictions_data):
             simplified_predictions[station_code][day] = daily_predictions
     return simplified_predictions
 
+
 def convert_general_data_to_dict(general_data):
     general_dict = {}
     for station in general_data:
@@ -31,40 +39,47 @@ def convert_general_data_to_dict(general_data):
         general_dict[station_code] = station
     return general_dict
 
+
 def combine_data(general_data, predictions_data):
     combined_data = {}
     for station_code, station_info in general_data.items():
         combined_data[station_code] = {
             "name": station_info["name"],
             "capacity": station_info["capacity"],
-            "is_renting": station_info.get("is_renting"),      # Use .get() to handle missing keys
+            "is_renting": station_info.get("is_renting"),  # Use .get() to handle missing keys
             "coordonnees_geo": station_info["coordonnees_geo"],
-            "predictions": predictions_data.get(station_code, {})
+            "predictions": predictions_data.get(station_code, {}),
         }
     return combined_data
 
-def main():
-    general_file_path = get_absolute_path('../data/velib_data_single_time.json')  # Change this to your actual general data file path
-    predictions_file_path = get_absolute_path('../data/compressed_predictions.json')  # Change this to your actual predictions data file path
-    output_file_path = get_absolute_path('../data/combined_data.json')  # Change this to your desired output file path
 
+def main():
+    general_file_path = get_absolute_path(
+        "../data/velib_data_single_time.json"
+    )  # Change this to your actual general data file path
+    predictions_file_path = get_absolute_path(
+        "../data/compressed_predictions.json"
+    )  # Change this to your actual predictions data file path
+    output_file_path = get_absolute_path(
+        "../data/combined_data.json"
+    )  # Change this to your desired output file path
 
     keys_to_remove = [
-        "is_installed",  
-        "numdocksavailable", 
-        "numbikesavailable", 
-        "mechanical", 
+        "is_installed",
+        "numdocksavailable",
+        "numbikesavailable",
+        "mechanical",
         "ebike",
         "is_returning",
         "duedate",
         "nom_arrondissement_communes",
-        "code_insee_commune"
+        "code_insee_commune",
     ]
 
-    with open(general_file_path, 'r', encoding='utf-8') as f:
+    with open(general_file_path, encoding="utf-8") as f:
         general_data = json.load(f)
 
-    with open(predictions_file_path, 'r', encoding='utf-8') as f:
+    with open(predictions_file_path, encoding="utf-8") as f:
         predictions_data = json.load(f)
 
     general_dict = convert_general_data_to_dict(general_data)
@@ -72,8 +87,9 @@ def main():
     simplified_predictions = simplify_predictions(predictions_data)
     combined_data = combine_data(cleaned_general_data, simplified_predictions)
 
-    with open(output_file_path, 'w', encoding='utf-8') as f:
+    with open(output_file_path, "w", encoding="utf-8") as f:
         json.dump(combined_data, f, ensure_ascii=False, indent=2)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
