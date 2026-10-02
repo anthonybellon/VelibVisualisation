@@ -267,6 +267,7 @@ needs no imputation.
 | 2026-10-02 | Dashboard in this repo is a debugger, not the product | The product front end lives in its own repository |
 | 2026-10-02 | Stdlib `urllib` instead of `requests` | One fewer dependency (`requests` was used but never declared) |
 | 2026-10-02 | Independent code review of v2 | Leakage and parity confirmed clean by perturbation runs. Fixed: dead stations in exports, DST-aligned profiles, DST `day_dates`, capacity-0 fallback, exact holdout length |
+| 2026-10-02 | `fit_model` passes features with no data at all as a constant | scikit-learn 1.9 raises on all-NaN columns, which happens with < 4 weeks of history (`fill_lag_4w`); first seen in CI on Python 3.13 |
 | 2026-10-02 | Front-end export keys in Paris local time (configurable) | v1's UTC keys were most likely unintentional; pending confirmation with the front end |
 
 ## 10. Status

@@ -41,6 +41,22 @@ def make_model() -> HistGradientBoostingRegressor:
     return HistGradientBoostingRegressor(**MODEL_PARAMS)
 
 
+def fit_model(rows: pd.DataFrame) -> HistGradientBoostingRegressor:
+    """Fit a fresh model on `rows`.
+
+    A feature with no observed value at all (e.g. `fill_lag_4w` when there is
+    less than four weeks of history) is passed as a constant. It carries no
+    information either way, so the model never splits on it and predictions
+    are unchanged; but scikit-learn >= 1.9 raises on all-NaN columns.
+    """
+    X = rows[FEATURES]
+    empty = [c for c in FEATURES if X[c].isna().all()]
+    if empty:
+        logger.info("No data yet for features %s; the model ignores them", ", ".join(empty))
+        X = X.assign(**dict.fromkeys(empty, 0.0))
+    return make_model().fit(X, rows[TARGET])
+
+
 def time_split(frame: pd.DataFrame, test_days: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Split by time: the last `test_days` x 24 hours (up to the latest row) form the test set."""
     cutoff = frame["time"].max() - pd.Timedelta(days=test_days) + pd.Timedelta(hours=1)
@@ -122,7 +138,7 @@ def train(
         test_rows["time"].min(),
         test_rows["time"].max(),
     )
-    model = make_model().fit(train_rows[FEATURES], train_rows[TARGET])
+    model = fit_model(train_rows)
     metrics = evaluate(model, test_rows)
     metrics["test_start"] = str(test_rows["time"].min())
     metrics["test_end"] = str(test_rows["time"].max())
@@ -131,7 +147,7 @@ def train(
 
     if refit:
         logger.info("Refitting on all %d rows", len(frame))
-        model = make_model().fit(frame[FEATURES], frame[TARGET])
+        model = fit_model(frame)
 
     bundle = {
         "version": BUNDLE_VERSION,

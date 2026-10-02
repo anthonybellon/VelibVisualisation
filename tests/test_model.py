@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from velib.features import FEATURES, build_features
-from velib.model import evaluate, load_bundle, save_bundle, time_split, train
+from velib.model import evaluate, fit_model, load_bundle, save_bundle, time_split, train
 from velib.neighbours import neighbour_adjacency
 
 
@@ -123,3 +123,13 @@ def test_diagnostics_station_errors_match_overall_scale(diagnostics):
     rows = sum(s["test_rows"] for s in scored)
     weighted = sum(s["mae"]["model"] * s["test_rows"] for s in scored) / rows
     assert weighted == pytest.approx(diagnostics["metrics"]["scores"]["model"]["mae"], rel=1e-2)
+
+
+def test_features_without_any_data_do_not_break_training(synthetic_hourly):
+    # With < 4 weeks of history `fill_lag_4w` is entirely NaN; scikit-learn >= 1.9
+    # raises on all-NaN columns, so fit_model must cope (and prediction must too).
+    frame = build_features(synthetic_hourly, neighbour_adjacency(synthetic_hourly.stations))
+    frame = frame.assign(fill_lag_4w=np.nan, fill_lag_3w=np.nan)
+    model = fit_model(frame)
+    predictions = model.predict(frame[FEATURES])
+    assert np.isfinite(predictions).all()
