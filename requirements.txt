@@ -1,18 +1,3 @@
-# Core dependencies
-pandas
-scikit-learn
-tqdm
-geopy
-numpy
-scipy
-
-# Development dependencies
-pytest
-pytest-cov
-ruff
-black
-pre-commit
-
-# Optional type checking
-# mypy
-# pandas-stubs
+# Installs the package with its development tools.
+# Runtime dependencies are declared in pyproject.toml.
+-e .[dev]

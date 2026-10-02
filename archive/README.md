@@ -1,5 +1,8 @@
 # Archived Scripts
 
+One-off scripts from the v1 pipeline (formerly `scripts/other_scripts/archive/`).
+The active pipeline is the `velib` package; see `ARCHITECTURE.md`.
+
 These scripts are kept for reference but are not part of the active pipeline.
 They were typically used for one-time data operations or diagnostics.
 
