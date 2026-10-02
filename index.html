@@ -1,108 +1,137 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
   <head>
-    <title>Paris Station Data</title>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <style>
-      #map {
-        height: 600px;
-        width: 100%;
-      }
-      .controls {
-        display: flex;
-        justify-content: center;
-        margin: 10px;
-        flex-direction: column;
-        align-items: center;
-      }
-      .title {
-        font-size: 18px;
-        font-weight: bold;
-        margin-top: 10px;
-      }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vélib' Model Debugger</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="web/styles.css" />
   </head>
   <body>
-    <div class="controls">
-      <div class="title">Paris Bike Stations</div>
-      <input type="text" id="searchInput" placeholder="Enter station code" />
-      <button onclick="searchStation()">Search</button>
-      <div id="searchResult"></div>
+    <div class="app">
+      <aside class="sidebar" aria-label="Model diagnostics">
+        <header>
+          <h1>Vélib' model debugger</h1>
+          <p class="muted" id="run-info">Loading diagnostics…</p>
+        </header>
+        <div class="banner" id="banner" hidden></div>
+
+        <section id="overview" hidden>
+          <h2>Holdout error <span class="muted" id="holdout-window"></span></h2>
+          <table class="scores">
+            <thead>
+              <tr>
+                <th scope="col">Method</th>
+                <th scope="col">MAE</th>
+                <th scope="col">RMSE</th>
+              </tr>
+            </thead>
+            <tbody id="scores"></tbody>
+          </table>
+          <p class="muted" id="skill"></p>
+        </section>
+
+        <section id="by-hour-section" hidden>
+          <h2>Error by hour of day <span class="muted">MAE, bikes</span></h2>
+          <div class="legend" data-legend="methods"></div>
+          <div class="chart" id="by-hour"></div>
+        </section>
+
+        <section id="by-day-section" hidden>
+          <h2>Error by day of week <span class="muted">MAE, bikes</span></h2>
+          <div class="legend" data-legend="methods"></div>
+          <div class="chart" id="by-day"></div>
+        </section>
+
+        <section id="importance-section" hidden>
+          <h2>Feature importance</h2>
+          <p class="muted">
+            Holdout MAE increase when a feature is shuffled, in percentage points of capacity.
+          </p>
+          <ol class="importance" id="importance"></ol>
+        </section>
+
+        <section id="data-section" hidden>
+          <h2>Data</h2>
+          <dl class="facts" id="data-facts"></dl>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <div class="toolbar" role="toolbar" aria-label="Map options">
+          <div class="segmented" id="mode" role="radiogroup" aria-label="Colour stations by"></div>
+          <div class="forecast-controls" id="forecast-controls" hidden>
+            <div class="segmented compact" id="days" role="radiogroup" aria-label="Day"></div>
+            <label class="hour">
+              <input type="range" id="hour" min="0" max="23" step="1" value="8" />
+              <output id="hour-label" for="hour">08:00</output>
+            </label>
+          </div>
+          <div class="search">
+            <input
+              type="search"
+              id="search"
+              list="station-list"
+              placeholder="Find station (name or code)"
+              autocomplete="off"
+              aria-label="Find station"
+            />
+            <datalist id="station-list"></datalist>
+          </div>
+        </div>
+
+        <div class="map-area">
+          <div id="map" aria-label="Map of stations"></div>
+          <div class="map-legend" id="map-legend" aria-live="polite"></div>
+        </div>
+
+        <section class="worst" aria-labelledby="worst-title">
+          <div class="worst-header">
+            <h2 id="worst-title">Stations to investigate</h2>
+            <span class="muted">Click a column to sort, a row to inspect.</span>
+          </div>
+          <div class="table-scroll">
+            <table class="station-table">
+              <thead>
+                <tr id="worst-head"></tr>
+              </thead>
+              <tbody id="worst-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      <aside class="drawer" id="drawer" aria-label="Station details" hidden>
+        <div class="drawer-header">
+          <div>
+            <h2 class="drawer-title" id="drawer-title"></h2>
+            <p class="muted" id="drawer-subtitle"></p>
+          </div>
+          <button type="button" class="close" id="drawer-close" aria-label="Close details">×</button>
+        </div>
+        <dl class="facts" id="drawer-facts"></dl>
+        <section>
+          <h2>Holdout: actual vs predicted <span class="muted">bikes</span></h2>
+          <div class="legend" data-legend="holdout"></div>
+          <div class="chart" id="holdout-chart"></div>
+        </section>
+        <section id="drawer-forecast" hidden>
+          <h2>Next-week forecast <span class="muted">bikes</span></h2>
+          <div class="chart" id="forecast-chart"></div>
+        </section>
+      </aside>
     </div>
-    <div id="map"></div>
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-    <script>
-      // Initialize the map
-      var map = L.map("map").setView([48.8566, 2.3522], 12);
 
-      // Add OpenStreetMap tiles
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      }).addTo(map);
-
-      var stationsData;
-
-      // Function to create popup content
-      function createPopupContent(station) {
-        return `<div class="station-info">
-                    <strong>${station.name}</strong><br>
-                    Station Code: ${station.stationcode}
-                  </div>`;
-      }
-
-      // Function to fetch and plot data
-      async function fetchDataAndPlot() {
-        const response = await fetch(
-          "data/velib-disponibilite-en-temps-reel.json"
-        );
-        const data = await response.json();
-        stationsData = data;
-
-        data.forEach(function (station) {
-          console.log(station.stationcode); // Log each station code
-          if (station.coordonnees_geo.lat && station.coordonnees_geo.lon) {
-            // Add markers with popup
-            var marker = L.marker([
-              station.coordonnees_geo.lat,
-              station.coordonnees_geo.lon,
-            ])
-              .bindPopup(createPopupContent(station))
-              .on("mouseover", function (e) {
-                this.openPopup();
-              })
-              .on("mouseout", function (e) {
-                this.closePopup();
-              });
-
-            marker.addTo(map);
-          }
-        });
-      }
-
-      // Function to search for a station
-      function searchStation() {
-        const searchInput = document
-          .getElementById("searchInput")
-          .value.trim()
-          .toLowerCase();
-        const resultDiv = document.getElementById("searchResult");
-
-        const foundStation = stationsData.find(
-          (station) => station.stationcode.trim().toLowerCase() === searchInput
-        );
-
-        if (foundStation) {
-          resultDiv.innerHTML = `Found: ${foundStation.name} (Code: ${foundStation.stationcode})`;
-        } else {
-          resultDiv.innerHTML = "Station not found";
-        }
-      }
-
-      // Fetch and plot the data
-      fetchDataAndPlot();
-    </script>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="web/app.js"></script>
   </body>
 </html>
